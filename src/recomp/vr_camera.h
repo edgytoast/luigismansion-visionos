@@ -88,6 +88,18 @@ bool invertAffine(const Matrix& matrix,Matrix& inverse);
 Matrix poseMatrix(const Pose& pose);
 Matrix inversePose(const Pose& pose);
 Pose uprightRecenter(const Pose& head); // preserve physical up; reset position and heading
+// A world-locked set (Apple Vision Pro port): the game world placed by one gravity-aligned
+// transform that changes only at cuts, instead of following the game camera.
+// set = T(at) * Ry(yaw) * S(scale) * T(-anchor): game world units -> the room's metres.
+struct SetPlacement {
+    std::array<float,3> anchor{}; // game world point placed at `at`
+    float yaw=0;                  // radians about +Y
+    float scale=0.001f;           // metres per game unit
+    std::array<float,3> at{0,-0.45f,-0.85f};
+};
+Matrix setFromWorld(const SetPlacement& placement);
+Matrix worldFromView(const Matrix& view); // inverse of a rigid GX view matrix (world -> camera)
+float viewHeading(const Matrix& view);    // yaw that turns the camera's horizontal forward to -Z
 // Camera-space transform applied to GX world/model-view matrices; no guest simulation changes.
 Matrix eyeFromGameCamera(const Pose& eye, const Pose& recenter, const CameraOptions& options);
 // GX perspective convention: near -> NDC -1, far -> NDC 0, w = -z.

@@ -40,6 +40,7 @@
 #include "internal.hpp"
 #include "thread.hpp"
 #include "window.hpp"
+#include "time_internal.hpp"
 
 #include <SDL3/SDL_filesystem.h>
 #include <magic_enum.hpp>
@@ -558,6 +559,10 @@ bool begin_frame() noexcept {
 
 void end_frame(bool presentToWindow = true) noexcept {
   ZoneScoped;
+  // See gfx::set_surface_present_suppressed(): while set, neither acquire nor present the window
+  // surface (Apple Vision Pro: nobody sees SDL's offscreen window; the eyes reach the display
+  // through the OpenXR swapchain). The frame's GPU work is still submitted.
+  presentToWindow = presentToWindow && !gfx::surface_present_suppressed();
 #ifdef AURORA_ENABLE_GX
   const activity::Scope busy{activity::Thread::Host, "aurora_end_frame"};
   gx::fifo::drain();
@@ -596,8 +601,12 @@ void end_frame(bool presentToWindow = true) noexcept {
     shot_encode(encoder);                       // 0224 test aid
     // The XR transfer reads a game texture, not the desktop swapchain. Composite
     // its per-eye UI explicitly, including offscreen right-eye submissions.
-    static const bool vrOverlay = [] { const char* value = std::getenv("LM_VR"); return value && std::string_view(value) == "1"; }();
+    static const bool vrOverlayEnv = [] { const char* value = std::getenv("LM_VR"); return value && std::string_view(value) == "1"; }();
+    // (Or the port's volume, while it shows the settings: gfx::set_overlay_capture.)
+    const bool vrOverlay = vrOverlayEnv || gfx::overlay_capture_wanted();
     if (vrOverlay) {
+      // (The game with its overlay: VR's eyes only. The port's volume needs the overlay alone.)
+      if (vrOverlayEnv) {
       const auto& target = webgpu::vr_present_target();
       const auto bindGroup = webgpu::create_copy_bind_group(webgpu::present_source());
       const wgpu::RenderPassColorAttachment attachment{
@@ -611,6 +620,7 @@ void end_frame(bool presentToWindow = true) noexcept {
       pass.Draw(3);
       imgui::render(pass, imguiDrawData, float(target.size.width), float(target.size.height));
       pass.End();
+      }
       // A transparent UI-only image can be placed over stereo gameplay by XR.
       const auto& overlay=webgpu::vr_overlay_target();
       const wgpu::RenderPassColorAttachment uiAttachment{
@@ -894,6 +904,9 @@ const AuroraBackend* aurora_get_available_backends(size_t* count) {
 }
 void aurora_set_log_level(AuroraLogLevel level) { aurora::g_config.logLevel = level; }
 void aurora_set_pause_on_focus_lost(bool value) { aurora::g_config.pauseOnFocusLost = value; }
+void aurora_set_external_pause(bool paused) {
+  aurora::time::internal::set_pause_reason(aurora::time::internal::PauseReason::External, paused);
+}
 void aurora_set_background_input(bool value) {
   aurora::g_config.allowJoystickBackgroundEvents = value;
   aurora::window::set_background_input(value);

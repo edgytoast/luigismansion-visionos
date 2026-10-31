@@ -20,6 +20,9 @@
 #else
 #include <signal.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 #endif
 
 namespace port {
@@ -222,6 +225,15 @@ fs::path computeExeDir() {
     const DWORD n = GetModuleFileNameW(nullptr, buf.data(), DWORD(buf.size()));
     buf.resize(n);
     return fs::path(buf).parent_path();
+#elif defined(__APPLE__)
+    // Apple (Vision Pro): LM_EXE_DIR names the folder of the program's files (the app bundle's
+    // resources: pipelines.bin); else the executable's folder.
+    if (const char* dir = std::getenv("LM_EXE_DIR"); dir && dir[0] == '/') return fs::path(dir);
+    char buf[4096];
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) == 0) return fs::path(buf).parent_path();
+    std::error_code ec;
+    return fs::current_path(ec);
 #else
     std::error_code ec;
     const fs::path p = fs::read_symlink("/proc/self/exe", ec);
@@ -875,7 +887,12 @@ void relaunch(bool setup, const std::filesystem::path& exePath) {
         execv(exePath.c_str(), argv.data());
         return;  // exec failed: the caller reports it
     }
+#if defined(__APPLE__)
+    // Apple Vision Pro: an app can't start itself again; the player opens it.
+    std::fprintf(stderr, "[install] restart: open the game again\n");
+#else
     if (fork() == 0) execv("/proc/self/exe", argv.data());
+#endif
 #endif
     std::_Exit(0);
 }

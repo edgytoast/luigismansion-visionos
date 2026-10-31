@@ -20,6 +20,7 @@
 #include "recomp/hle.h"
 #include "recomp/version.h"
 #include "recomp/vr_host.h"
+#include "recomp/volume.h"
 #include "recomp/widescreen.h"
 
 #include <algorithm>
@@ -82,7 +83,10 @@ HLE(fn_8001333C) {
     const u32 portal = c.r[3], out = c.r[4], parent = c.r[5];
     HorPlusScope horPlus(VA(0x803A3C98) + 0x258);
     callOriginal(c, "fn_8001333C");
-    if(vrhost::conservativeVisibility() && gu::inMem1(portal+4) && gu::inMem1(out+7) && gu::inMem1(parent+7)) {
+    // Apple Vision Pro, On your table: the volume shows the room from the viewer's side, not the flat
+    // camera's, so it needs the open rooms too (the Foyer's upper landing, room 31, was missing from the
+    // set whenever the camera didn't see its opening: holes at the top of the Foyer).
+    if((vrhost::conservativeVisibility() || volume::enabled()) && gu::inMem1(portal+4) && gu::inMem1(out+7) && gu::inMem1(parent+7)) {
         // Capture connected open rooms without clipping them to a rectangle made
         // for the flat camera. Geometry/depth still occludes them in each VR eye.
         // Keep the original closed-portal check and surrounding room/load traversal.

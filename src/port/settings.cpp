@@ -496,7 +496,26 @@ void resetSettingsToDefaults() {
     saveSettings();
 }
 
+namespace {
+void (*sSaveFilter)(Settings&) = nullptr;
+}
+void setSaveFilter(void (*filter)(Settings&)) { sSaveFilter = filter; }
+
 void saveSettings() {
+    // A mode's overrides stay out of the file (setSaveFilter): written from a filtered copy.
+    struct Filtered {
+        Settings kept;
+        bool on = false;
+        Filtered() {
+            if (!sSaveFilter) return;
+            kept = settings();
+            sSaveFilter(settings());
+            on = true;
+        }
+        ~Filtered() {
+            if (on) settings() = kept;
+        }
+    } filtered;
     // Written to a temporary file and renamed over settings.ini, so a crash or power loss while
     // saving never leaves a truncated file (which would reset every setting on the next launch).
     const std::filesystem::path path = settingsFile(), tmp = std::filesystem::path(path) += ".tmp";

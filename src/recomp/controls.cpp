@@ -431,6 +431,14 @@ std::vector<Pad> listPads() {
         SDL_GUIDToString(SDL_GetGamepadGUIDForID(id), guid, sizeof(guid));
         p.guid = guid;
         const char* n = SDL_GetGamepadNameForID(id);
+#ifdef LM_VR_VISIONOS
+        // Apple Vision Pro: each PS VR2 Sense half is also an SDL gamepad ("PlayStation VR2 Sense
+        // Controller (L)"), but in the immersive space the halves play through OpenXR (the VR
+        // mod's Touch bindings): as a GameCube port too, their sticks and buttons would play twice.
+        // (The port's window mode joins both halves into one virtual pad, "PS VR2 Sense
+        // Controllers": that one plays.)
+        if (n && std::strstr(n, "Sense Controller") && !std::strstr(n, "Sense Controllers")) continue;
+#endif
         p.name = n ? n : "Gamepad";
         p.type = SDL_GetGamepadTypeForID(id);
         for (const auto& q : pads)

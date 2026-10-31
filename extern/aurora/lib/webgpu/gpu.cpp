@@ -1,3 +1,6 @@
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 #include "gpu.hpp"
 
 #include <algorithm>
@@ -98,6 +101,7 @@ bool g_clipDistancesSupported = false;
 bool g_bcTexturesSupported = false;
 bool g_astcTexturesSupported = false;
 bool g_textureComponentSwizzleSupported = false;
+bool g_metalSharedImageSupported = false;
 uint32_t g_msaaSupportMask = 1;
 uint32_t g_msaaRequested = 1;
 static std::atomic_bool g_initialized = false;
@@ -1045,6 +1049,25 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
       }
       requiredFeatures.push_back(wgpu::FeatureName::SharedTextureMemoryD3D12Resource);
     }
+#if defined(__APPLE__) && TARGET_OS_VISION
+    // Apple Vision Pro: the OpenXR provider (visionos/openxr-provider) owns the swapchain images as
+    // IOSurfaces and orders the compositor's reads against Dawn's writes with MTLSharedEvents, and
+    // the window mode hands its frames to RealityKit in IOSurfaces too, so both features must be
+    // requested at device creation.
+    {
+      const bool ioSurface = g_adapter.HasFeature(wgpu::FeatureName::SharedTextureMemoryIOSurface);
+      const bool sharedEvent = g_adapter.HasFeature(wgpu::FeatureName::SharedFenceMTLSharedEvent);
+      if (ioSurface) {
+        requiredFeatures.push_back(wgpu::FeatureName::SharedTextureMemoryIOSurface);
+      }
+      if (sharedEvent) {
+        requiredFeatures.push_back(wgpu::FeatureName::SharedFenceMTLSharedEvent);
+      }
+      g_metalSharedImageSupported = ioSurface && sharedEvent;
+      Log.info("visionOS shared-image support: SharedTextureMemoryIOSurface={} SharedFenceMTLSharedEvent={} -> {}",
+               ioSurface, sharedEvent, g_metalSharedImageSupported ? "available" : "UNAVAILABLE");
+    }
+#endif
     std::string featureList;
     for (auto featureName : requiredFeatures) {
       featureList += "\n  ";

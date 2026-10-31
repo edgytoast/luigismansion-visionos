@@ -188,8 +188,32 @@ bool create_pass(uint32_t width, uint32_t height);
 /// True while an offscreen pass (create_pass or GXCreateFrameBuffer) is open.
 bool is_offscreen() noexcept;
 
+/// Suppresses acquiring/presenting the OS window surface at end_frame() (the frame's GPU work is
+/// still submitted). For a host whose window nobody sees: Apple Vision Pro's window mode and VR
+/// session, where the frames reach the display another way (from TPVR's aurora-vr). Read by the
+/// render worker at end_frame; takes effect from the next frame boundary.
+void set_surface_present_suppressed(bool suppressed) noexcept;
+
+/// Apple Vision Pro, a game drawn over the room: while requested, the EFB depth is snapshotted
+/// (R32Float, single sample) at the frame's first EFB copy that clears a full target into a colour
+/// texture, before that clear (games that copy their 3D scene out and paste it back as a flat
+/// picture, like Luigi's Mansion, leave no depth behind for later). room_depth() is that snapshot
+/// when the last recorded frame made one, else an empty view (then the frame's own depth, the EFB
+/// depth texture, still holds the scene).
+void request_room_depth(bool requested) noexcept;
+wgpu::TextureView room_depth() noexcept;
+bool surface_present_suppressed() noexcept;
+
 /// Increments on aurora_end_frame.
 uint32_t current_frame() noexcept;
+
+/// The Luigi's Mansion port's volume: while set (host thread, before aurora_end_frame), the frame's
+/// ImGui overlay is also rendered alone into a texture of its own (transparent where it draws
+/// nothing), as for VR (LM_VR=1); overlay_capture() gives that texture of the last frame that
+/// rendered it, for a later frame's encoder task to copy (render worker).
+void set_overlay_capture(bool on) noexcept;
+bool overlay_capture_wanted() noexcept;
+bool overlay_capture(wgpu::TextureView& view, uint32_t& width, uint32_t& height) noexcept;
 
 /// Blocks until the render worker has drained its queue. After this returns,
 /// no draw callback is executing or queued to execute; used before unloading

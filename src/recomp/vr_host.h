@@ -3,10 +3,11 @@
 #include "recomp/vr_avatar.h"
 #include <cstdint>
 namespace recomp::vrhost {
-struct EyeCamera { vr::Matrix transform, inverse, projection; bool cinematic=false; float eyeOffset=0; std::array<float,4> dialogueHud{1,1,0,0};
+struct EyeCamera { vr::Matrix transform, inverse, projection; vr::Matrix eyeFromRoom{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}; bool cinematic=false; float eyeOffset=0; std::array<float,4> dialogueHud{1,1,0,0};
     std::array<float,4> hud{1,1,0,0}; };
 bool prepare(); // opt-in LM_VR=1; before Aurora selects a graphics adapter
 bool enabled();
+bool sessionHeld(); // Apple Vision Pro: the session is stopped (Digital Crown) or lost focus after its first
 void attach();
 void beginFrame();
 bool rendering();
@@ -56,6 +57,10 @@ bool expandedStoryScenes();
 void setCreditsView(bool active);
 bool conservativeVisibility();
 bool diorama();
+// The diorama's world-locked set (on by default): set-from-world for this frame, placed once per
+// room or cut (and when Luigi leaves the comfortable zone, in one step behind a fade), never
+// following the game camera. False: the original camera-relative diorama. Eye 0 updates it.
+bool dioramaSet(const vr::Matrix& view,const vr::PlayerAnchor& player,unsigned map,int room,bool cut,vr::Matrix& setFromWorld);
 bool gameBoyGrabbable();
 std::array<float,3> hudLayout();
 float dialogueLift(); // metres above the existing speech layout

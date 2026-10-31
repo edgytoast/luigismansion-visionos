@@ -26,9 +26,11 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <execinfo.h>
+#include <unistd.h>
+#if !defined(__APPLE__)
 #include <sys/syscall.h>
 #include <ucontext.h>
-#include <unistd.h>
+#endif
 #endif
 
 namespace port {
@@ -175,6 +177,11 @@ void onSignal(int sig, siginfo_t* info, void* uctx) {
 }
 
 void installSignalHandlers() {
+#if defined(__APPLE__)
+    // Apple (Vision Pro): fatal signals go to the system's crash reporter, whose reports name
+    // every thread and frame; a handler here would only get in its way.
+    return;
+#endif
     // backtrace() loads libgcc_s on first use (allocates): do that now, not in a handler.
     void* warm[1];
     backtrace(warm, 1);
@@ -254,6 +261,14 @@ void dumpAllThreads(const char* reason) {
         if (te.th32OwnerProcessID == pid && te.th32ThreadID != self) printThreadStack(process, te.th32ThreadID);
     CloseHandle(snap);
     std::fprintf(stderr, "=== end of thread stacks ===\n");
+    std::fflush(stderr);
+}
+#elif defined(__APPLE__)
+// Apple (Vision Pro): no /proc or tgkill to reach the other threads (this runs on the watchdog's
+// own thread, so its stack says nothing about the stall): `sample <pid>` on the Mac, or a crash
+// report, has them.
+void dumpAllThreads(const char* reason) {
+    std::fprintf(stderr, "\n=== %s: thread stacks are not available here (use sample or a crash report) ===\n", reason);
     std::fflush(stderr);
 }
 #else
@@ -415,6 +430,11 @@ void startHangWatchdog() {
 }
 
 void installCrashHandler() {
+#if defined(__APPLE__)
+    // Apple (Vision Pro): abort(), std::terminate and fatal signals go to the system's crash
+    // reporter, whose reports name every thread and frame.
+    return;
+#endif
     std::signal(SIGABRT, onAbort);
     std::set_terminate([] {
         aurora_pipeline_cache_note_crash();

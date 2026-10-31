@@ -60,6 +60,9 @@ extern bool g_hasCoreFeatures;
 extern bool g_bcTexturesSupported;
 extern bool g_astcTexturesSupported;
 extern bool g_textureComponentSwizzleSupported;
+// Apple Vision Pro: SharedTextureMemoryIOSurface and SharedFenceMTLSharedEvent were both enabled on
+// the device (the OpenXR provider's swapchain images and the window's frames are IOSurfaces).
+extern bool g_metalSharedImageSupported;
 extern bool g_dualSourceBlendingSupported;
 extern bool g_clipDistancesSupported; // 0028
 // 0233: MSAA sample counts this device can render with (bit n = 2^n samples; bit 0 always set) and

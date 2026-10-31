@@ -121,6 +121,10 @@ HLE(VISetNextFrameBuffer) {
 }
 
 bool frame::presentOnCopy() { return palGame(); }
+void frame::waitRetrace() {
+    const u32 start = sRetraceCount.load();
+    while (sRetraceCount.load() == start) sched::sleepOn(sRetraceQueue);
+}
 
 // European double-buffered frame end (fn_80007844, called by LMChangeFrameBuffer): it copies
 // the frame only when the VI has picked up the previous one (lbl_804C5700, set by the

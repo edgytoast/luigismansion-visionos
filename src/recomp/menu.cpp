@@ -24,6 +24,7 @@
 #include "recomp/ui_scale.h"
 #include "recomp/unused2.h"
 #include "recomp/vr_host.h"
+#include "recomp/volume.h"
 
 #include <aurora/aurora.h>
 #include <imgui.h>
@@ -356,7 +357,11 @@ bool tab(const char* name) {
     return ImGui::BeginTabItem(name, nullptr, select ? ImGuiTabItemFlags_SetSelected : 0);
 }
 
-void applyResolution() { VISetFrameBufferScale(float(port::settings().video.resolutionScale)); }
+void applyResolution() {
+    // (On your table: the window's own size, or at most 2x, whatever the setting says.)
+    const int scale = port::settings().video.resolutionScale;
+    VISetFrameBufferScale(float(recomp::volume::enabled() ? recomp::volume::resolutionScale(scale) : scale));
+}
 
 void applyWindowSettings() {
     const auto& v = port::settings().video;
@@ -711,8 +716,12 @@ void gameTab() {
     }
     auto& inst = port::install();
     if (inst.staticBuild) {
+#ifdef LM_VR_VISIONOS
+        ImGui::Text("%s, recompiled from your disc when this app was built.", port::versionName(inst.running));
+#else
         ImGui::Text("Developer build: %s, recompiled at build time.", port::versionName(inst.running));
         ImGui::TextDisabled("LuigisMansionRecomp manages discs and versions (docs/SETUP.md).");
+#endif
     } else {
         auto row = [](const char* label, const std::string& path, bool ready) {
             ImGui::Text("%s:", label);
@@ -768,8 +777,10 @@ void gameTab() {
     }
     if (port::palBaseFeature() == port::Avail::Yes)
         ImGui::TextDisabled("Used for a new save; an existing save keeps its language (in-game Options).");
+#ifndef LM_VR_VISIONOS  // Apple Vision Pro: files live in the app's container; no updater
     dataSection();
     updatesSection();
+#endif
 }
 
 // Hardware-accuracy toggles (all on by default). Each entry: checkbox bound to
@@ -1491,7 +1502,9 @@ void visualsTab() {
             const int w = int(float(h) * std::max(aspect, 4.0f / 3.0f) + 0.5f);
             std::snprintf(label, sizeof(label), "%dx  (%d x %d)", rs, w, h);
         }
-        if (recomp::menu::SliderInt("Render resolution", &rs, 0, 8, label, ImGuiSliderFlags_AlwaysClamp)) {
+        // (On your table: at most 2x, what the table renders at: volume::resolutionScale.)
+        if (recomp::menu::SliderInt("Render resolution", &rs, 0, recomp::volume::enabled() ? 2 : 8, label,
+                                    ImGuiSliderFlags_AlwaysClamp)) {
             sDirty = true;
             applyResolution();
         }
@@ -1911,6 +1924,7 @@ void fpsOverlay() {
 
 void init() {
     port::loadSettings();
+    recomp::volume::applySettingsOverrides();  // (On your table: loaded again, overridden again)
     if(vrhost::enabled() && port::settings().video.resolutionScale==0) port::settings().video.resolutionScale=3;
     if(vrhost::enabled()) {
         port::settings().rendering.textureCopyFilter=false;
@@ -1958,6 +1972,7 @@ void handleEvent(const SDL_Event& ev) {
         if(ev.type==SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
            (ev.gbutton.button==SDL_GAMEPAD_BUTTON_LEFT_STICK || ev.gbutton.button==SDL_GAMEPAD_BUTTON_RIGHT_STICK)) {
             auto* pad=SDL_GetGamepadFromID(ev.gbutton.which);
+            // (On your table, the visionOS volume, too: the window host shows the overlay on its panel.)
             if(pad && !chordPad && SDL_GetGamepadButton(pad,SDL_GAMEPAD_BUTTON_LEFT_STICK) && SDL_GetGamepadButton(pad,SDL_GAMEPAD_BUTTON_RIGHT_STICK)) {
                 chordPad=ev.gbutton.which;toggle();
                 if(std::getenv("LM_MENU_NAV_TRACE"))std::printf("[menu pad] chord open=%d\n",int(sOpen));
@@ -2238,7 +2253,9 @@ void draw() {
             ImGui::Text("Restore every setting to its default? This cannot be undone.");
             ImGui::TextDisabled("A few options (marked in their tooltips) apply on the next launch.");
             if (recomp::menu::Button("Restore defaults")) {
+                recomp::volume::forgetPlayersSettings();  // (On your table: the real defaults to the file)
                 port::resetSettingsToDefaults();
+                recomp::volume::applySettingsOverrides();  // (and the table's own again, in memory)
                 // Settings applied only when their control changes: apply the defaults now too.
                 applyWindowSettings();
                 const bool hmPal = port::settings().enhancements.hiddenMansionPal;

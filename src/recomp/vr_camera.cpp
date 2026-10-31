@@ -165,6 +165,28 @@ Pose uprightRecenter(const Pose& head) {
     origin.orientation={0,std::sin(yaw*0.5f),0,std::cos(yaw*0.5f)};
     return origin;
 }
+Matrix setFromWorld(const SetPlacement& p) {
+    const float c=std::cos(p.yaw),s=std::sin(p.yaw);
+    const float rotation[3][3]={{c,0,s},{0,1,0},{-s,0,c}};
+    Matrix m=identity();
+    for(int r=0;r<3;++r) {
+        float offset=p.at[r];
+        for(int k=0;k<3;++k) {m[r*4+k]=p.scale*rotation[r][k];offset-=p.scale*rotation[r][k]*p.anchor[k];}
+        m[r*4+3]=offset;
+    }
+    return m;
+}
+Matrix worldFromView(const Matrix& view) {
+    Matrix out=identity();
+    if(!invertAffine(view,out)) return identity();
+    return out;
+}
+float viewHeading(const Matrix& view) {
+    // The camera looks down its -Z: in the world that is minus the view's third row.
+    const float fx=-view[8],fz=-view[10];
+    if(!std::isfinite(fx)||!std::isfinite(fz)||std::hypot(fx,fz)<1e-6f) return 0;
+    return std::atan2(fx,-fz);
+}
 Matrix eyeFromGameCamera(const Pose& eye, const Pose& recenter, const CameraOptions& options) {
     if (!positive(options.unitsPerMetre) || !positive(options.miniatureScale) ||
         !std::isfinite(options.viewingDistance) || !std::isfinite(options.verticalOffset))

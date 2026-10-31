@@ -373,6 +373,10 @@ struct Settings {
 Settings& settings();
 void loadSettings();
 void saveSettings();
+// While set, saveSettings writes the settings with this applied to a copy (a mode's in-memory
+// overrides put back to the player's own values: Apple Vision Pro's On your table), never to the
+// settings in use.
+void setSaveFilter(void (*filter)(Settings&));
 // Every setting (the table and all extensions, e.g. controller bindings) back to its first-install
 // default, then saved.
 void resetSettingsToDefaults();

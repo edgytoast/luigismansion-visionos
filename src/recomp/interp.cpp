@@ -222,6 +222,7 @@ struct Tape {
     bool searchTransition=false;
     bool dialogue = false, pauseView = false, mapScreen = false, pickupPose = false, reactionPose = false;
     u32 mapId = 0;
+    s32 roomId = -1;  // the room Luigi is in (the game's room state), for the world-locked diorama
     bool cut = false;          // the main camera jumped since pairedWith (or appeared): shown as is
     float camMove = 0, camTurn = 0;  // the main camera's eye move / turn (degrees) since pairedWith
     u32 paired = 0, unpaired = 0, untagged = 0;
@@ -1736,6 +1737,7 @@ void endTape(u32 retraceCount) {
         std::sort(actorDepths.begin(),actorDepths.end());tape->scriptedFocus=actorDepths[actorDepths.size()/2];
     }
     tape->mapId = rd32(VA(0x804D80C8));
+    tape->roomId = s32(rd32(VA(0x803A3CA0) + 0xC) >> 24);
     tape->storyGeometry=std::any_of(tape->patches.begin(),tape->patches.end(),[&](const Patch& p){
         return p.kind==Kind::PosMtx && p.role==0 && p.projPatch>=0 &&
             (p.bundle>=tape->bundlePass.size()||tape->bundlePass[p.bundle]==0) &&
@@ -5540,6 +5542,21 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 w[2]=u8(value>>16);w[3]=u8(value>>8);w[4]=u8(value);
             };
             put(o,y(top),x(left));put(o+5,y(bottom)-1,x(right)-1);
+        }
+        // The world-locked diorama (default): the camera's view comes off, and the room stays where
+        // it was placed (vrhost::dioramaSet), whatever the game camera does.
+        if(vrhost::diorama() && !eye->cinematic && !expandedSubview && sceneView<b.views.size()) {
+            vr::Matrix view{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+            const M34* source=&b.views[sceneView];
+            // The blended view only while this present blends (alpha 1 replays b's own matrices).
+            if(a && alpha<1.0f && sceneView<sViewToA.size() && sViewToA[sceneView]>=0)
+                if(const auto* pair=viewPair(*a,u16(sViewToA[sceneView]),b,sceneView,alpha);pair && pair->ok && !pair->cut) source=&pair->vt;
+            std::copy(source->begin(),source->end(),view.begin());
+            vr::Matrix setFromWorld;
+            if(vrhost::dioramaSet(view,b.playerAnchor,b.mapId,b.roomId,b.cut,setFromWorld)) {
+                camera.transform=vr::multiply(eye->eyeFromRoom,vr::multiply(setFromWorld,vr::worldFromView(view)));
+                if(!vr::invertAffine(camera.transform,camera.inverse)) camera.inverse=camera.transform;
+            }
         }
         if(vrhost::firstPerson() && !eye->cinematic && b.playerAnchor.valid && sceneView<b.views.size()) {
             auto anchor=b.playerAnchor;

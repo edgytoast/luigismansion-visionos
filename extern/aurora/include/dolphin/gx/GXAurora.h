@@ -174,6 +174,13 @@ extern "C" {
  */
 #define GX_AURORA_PROBE_TAG 0x0068
 
+/**
+ * The scene mirror (aurora/mirror.h): marks where a frame's 3D scene begins and ends, in GX
+ * stream order. Followed by a u32 mark (AURORA_MIRROR_MARK_*) and an f32 value. (WW's port uses
+ * 0x0060, which this aurora has for GX_AURORA_STATE_SAVE.)
+ */
+#define GX_AURORA_MIRROR_MARK 0x0070
+
 #define GX2_SET_POLYGON_OFFSET 0x1000
 
 
@@ -329,6 +336,14 @@ void GXCreateFrameBuffer(u32 width, u32 height);
  * Must be called after GXCreateFrameBuffer() to resume normal rendering.
  */
 void GXRestoreFrameBuffer(void);
+
+/**
+ * Scene mirror marks (see GX_AURORA_MIRROR_MARK and aurora/mirror.h).
+ */
+#define AURORA_MIRROR_MARK_BEGIN 1u     /* the frame's 3D scene starts; value: the game's frame number (< 2^24) */
+#define AURORA_MIRROR_MARK_END 2u       /* it ends (before the 2D/HUD); value: the camera's focus distance */
+#define AURORA_MIRROR_MARK_NO_SCENE 3u  /* the frame had no 3D scene */
+void GXAuroraMirrorMark(u32 mark, f32 value);
 
 /**
  * Command capture, for replaying a frame's commands later (e.g. frame interpolation).

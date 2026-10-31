@@ -11,6 +11,7 @@
 #include "dolphin/gd/GDGeometry.h"
 #include "dolphin/gx/GXAurora.h"
 #include "gx.hpp"
+#include "mirror.hpp"
 #include "pipeline.hpp"
 #include "regs.hpp"
 #include "shader_info.hpp"
@@ -326,6 +327,7 @@ s64 aurora_payload_len(u16 subCmd, const u8* p, size_t avail) noexcept {
   case GX_AURORA_DESTROY_COPY_TEX:
   case GX_AURORA_LOAD_COPY_DEST:
   case GX_AURORA_BEGIN_OFFSCREEN:
+  case GX_AURORA_MIRROR_MARK:
     return fixed(8);
   case GX_AURORA_LOAD_COPY_DST:
     return fixed(13);
@@ -1571,10 +1573,16 @@ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, ByteReader& 
       }
     }
     gfx::detail::increment_merged_draw_count();
+    if (mirror::recording() && !g_gxState.replayMask) {
+      mirror::record(prim, sDrawCache.config.shaderConfig, vtxCount, vertexData.data(), nullptr, 0, true);
+    }
     return;
   }
 
   handle_draw_unmerged(prim, fmt, vtxCount, vertRange);
+  if (mirror::recording() && !g_gxState.replayMask) {
+    mirror::record(prim, sDrawCache.config.shaderConfig, vtxCount, vertexData.data(), nullptr, 0);
+  }
 }
 
 static void handle_draw(u8 cmd, ByteReader& reader) noexcept {
@@ -1800,10 +1808,12 @@ void handle_aurora(ByteReader& reader) noexcept {
     const u32 height = reader.read<u32>();
     if (!g_gxState.replayMask) {
       gfx::begin_offscreen(width, height);
+      mirror::offscreen(true);
     }
   } else if (subCmd == GX_AURORA_END_OFFSCREEN) {
     if (!g_gxState.replayMask) {
       gfx::end_offscreen();
+      mirror::offscreen(false);
     }
   } else if (subCmd == GX_AURORA_DESTROY_TEXOBJ) {
     const u32 id = reader.read<u32>();
@@ -1883,7 +1893,15 @@ void handle_aurora(ByteReader& reader) noexcept {
     const gfx::Range vertRange = gfx::push_verts(vertexData.data(), vertexData.size(), 4);
     if (drawIndexCount != 0) {
       push_gx_draw(prim, fmt, vtxCount, vertRange, idxRange, drawIndexCount);
+      if (mirror::recording() && !g_gxState.replayMask && !wire_prim(prim)) {
+        mirror::record(prim, sDrawCache.config.shaderConfig, vtxCount, vertexData.data(),
+                       reinterpret_cast<const u16*>(indexData.data()), indexCount);
+      }
     }
+  } else if (subCmd == GX_AURORA_MIRROR_MARK) {
+    const u32 mark = reader.read<u32>();
+    const f32 value = reader.read<f32>();
+    mirror::mark(mark, value);
   } else if (subCmd == GX_AURORA_STATE_SAVE || subCmd == GX_AURORA_STATE_RESTORE) {
     // Replay state slots: everything but the copy-texture caches (copies made since stay valid)
     // and the per-frame cache state (array upload ranges, texture binds), which is rebuilt.
@@ -1933,8 +1951,10 @@ void handle_aurora(ByteReader& reader) noexcept {
     gfx::efb_ram::set_generation(v & 7, (v & 0x80) != 0, (v & 0x40) != 0);
   } else if (subCmd == GX_AURORA_DEBUG_GROUP_PUSH) {
     auto label = reader.read_string();
+    mirror::debug_group(&label);
     gfx::push_debug_group(std::move(label));
   } else if (subCmd == GX_AURORA_DEBUG_GROUP_POP) {
+    mirror::debug_group(nullptr);
     pop_debug_group();
   } else if (subCmd == GX_AURORA_DEBUG_MARKER_INSERT) {
     auto label = reader.read_string();

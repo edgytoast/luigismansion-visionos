@@ -1,3 +1,6 @@
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 #include "adapter.hpp"
 #include "../../gamepad.hpp"
 #include "../../device.hpp"
@@ -462,10 +465,19 @@ void PADClearPort(const u32 port) {
 const std::array<PADButtonMapping, PAD_BUTTON_COUNT>&
 aurora::pad::detail::default_buttons(const gamepad::GameController& controller) {
   switch (SDL_GetGamepadType(controller.m_controller)) {
+#if defined(__APPLE__) && TARGET_OS_VISION
+  // Apple Vision Pro: every pad plays by its labels (A the A button, B the B button...), so the
+  // launcher's controller drawing, which shows the connected pad's own labels, is right for Xbox
+  // pads too (the GameCube-style mapping below swaps their side face buttons). From Wind Waker VR.
+  case SDL_GAMEPAD_TYPE_XBOX360:
+  case SDL_GAMEPAD_TYPE_XBOXONE:
+    return g_defaultButtonsStandard;
+#else
   case SDL_GAMEPAD_TYPE_XBOX360:
     return g_defaultButtonsXBox360;
   case SDL_GAMEPAD_TYPE_XBOXONE:
     return g_defaultButtonsXBoxOne;
+#endif
   case SDL_GAMEPAD_TYPE_STANDARD:
     return g_defaultButtonsStandard;
   case SDL_GAMEPAD_TYPE_PS3:

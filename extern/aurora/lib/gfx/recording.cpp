@@ -1,6 +1,8 @@
 #include "../gx/command_processor.hpp"
 #include "recording.hpp"
 
+#include <atomic>
+
 #include "encoding.hpp"
 #include "enhanced.hpp"
 #include "frame.hpp"
@@ -577,10 +579,18 @@ void enqueue_pass(FramePacket& frame, uint32_t passIndex) {
 }
 } // namespace
 
+// See gfx.hpp, request_room_depth. Written and read on the game thread, at record time.
+static std::atomic<bool> g_roomDepthRequested{false};
+static bool g_roomDepthCaptured = false;
+static webgpu::TextureWithSampler g_roomDepth;
+void request_room_depth(bool requested) noexcept { g_roomDepthRequested.store(requested, std::memory_order_relaxed); }
+wgpu::TextureView room_depth() noexcept { return g_roomDepthCaptured ? g_roomDepth.view : wgpu::TextureView{}; }
+
 namespace detail {
 
 void begin_recording(FramePacket& packet, size_t frameSlot) {
   CHECK(!g_recorder.active(), "A recording session is already active");
+  g_roomDepthCaptured = false;
   if (g_recorder.normalRequested && webgpu::enable_normal_buffer()) {
     g_recorder.normalRequested = false;
   }
@@ -909,6 +919,33 @@ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bo
   }
   // Resolve current render pass
   auto& prevPass = current_render_passes()[g_recorder.currentRenderPass];
+  // The room's depth (request_room_depth): the first full clearing copy into a colour format.
+  if (g_roomDepthRequested.load(std::memory_order_relaxed) && !g_roomDepthCaptured && !g_recorder.inOffscreen &&
+      clearDepth && !gx::is_depth_format(resolveFormat) && !prevPass.snapshotDepthDst && prevPass.hasDepth &&
+      tex_copy_conv::snapshot_depth_supported()) {
+    const auto& size = prevPass.colorAttachments[SceneColorAttachmentIndex].size;
+    const bool full = rect.x <= 0 && rect.y <= 0 && rect.x + rect.width >= static_cast<int32_t>(size.width) &&
+                      rect.y + rect.height >= static_cast<int32_t>(size.height);
+    if (full) {
+      if (!g_roomDepth.texture || g_roomDepth.size.width != size.width || g_roomDepth.size.height != size.height) {
+        const wgpu::TextureDescriptor desc{
+            .label = "Room depth",
+            .usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding,
+            .dimension = wgpu::TextureDimension::e2D,
+            .size = {size.width, size.height, 1},
+            .format = wgpu::TextureFormat::R32Float,
+            .mipLevelCount = 1,
+            .sampleCount = 1,
+        };
+        auto roomTexture = webgpu::g_device.CreateTexture(&desc);
+        auto roomView = roomTexture.CreateView();
+        g_roomDepth = webgpu::TextureWithSampler{.texture = std::move(roomTexture), .view = std::move(roomView),
+                                                 .size = desc.size, .format = desc.format};
+      }
+      prevPass.snapshotDepthDst = g_roomDepth.view;
+      g_roomDepthCaptured = true;
+    }
+  }
   prevPass.resolveTarget = std::move(texture);
   prevPass.resolveRect = rect;
   prevPass.resolveFormat = resolveFormat;
@@ -1072,6 +1109,29 @@ void queue_palette_conv(tex_palette_conv::ConvRequest req) {
 }
 
 bool is_offscreen() noexcept { return g_recorder.inOffscreen; }
+
+// See gfx.hpp. Atomic: written on the game thread, read on the render worker at end_frame.
+static std::atomic<bool> g_surfacePresentSuppressed{false};
+void set_surface_present_suppressed(bool suppressed) noexcept {
+  g_surfacePresentSuppressed.store(suppressed, std::memory_order_relaxed);
+}
+bool surface_present_suppressed() noexcept { return g_surfacePresentSuppressed.load(std::memory_order_relaxed); }
+
+namespace {
+std::atomic_bool g_overlayCapture{false};
+}
+void set_overlay_capture(bool on) noexcept { g_overlayCapture.store(on, std::memory_order_relaxed); }
+bool overlay_capture_wanted() noexcept { return g_overlayCapture.load(std::memory_order_relaxed); }
+bool overlay_capture(wgpu::TextureView& view, uint32_t& width, uint32_t& height) noexcept {
+  const auto& target = webgpu::vr_overlay_target();
+  if (!target.view) {
+    return false;
+  }
+  view = target.view;
+  width = target.size.width;
+  height = target.size.height;
+  return true;
+}
 
 bool has_normal_attachment() noexcept {
   CHECK(g_recorder.currentRenderPass != UINT32_MAX, "has_normal_attachment called outside of a frame");
@@ -1251,7 +1311,10 @@ bool push_encoder_task(EncoderTaskId type, const void* payload, size_t payloadSi
   }
 
   gx::fifo::drain();
+  return push_encoder_task_in_stream(type, payload, payloadSize);
+}
 
+bool push_encoder_task_in_stream(EncoderTaskId type, const void* payload, size_t payloadSize) {
   if (!g_recorder.active() || g_recorder.currentRenderPass == UINT32_MAX) {
     Log.warn("push_encoder_task: called outside an active render pass");
     return false;

@@ -10,6 +10,7 @@ enum class PauseReason : uint32_t {
   Window = 1u << 0,
   Surface = 1u << 1,
   Background = 1u << 2,
+  External = 1u << 3,
 };
 
 void set_pause_reason(PauseReason reason, bool paused) noexcept;

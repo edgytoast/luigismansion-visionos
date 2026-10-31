@@ -168,6 +168,12 @@ void GXRestoreFrameBuffer() {
   aurora::gx::fifo::publish();
 }
 
+void GXAuroraMirrorMark(u32 mark, f32 value) {
+  GX_WRITE_AURORA(GX_AURORA_MIRROR_MARK);
+  GX_WRITE_U32(mark);
+  GX_WRITE_F32(value);
+}
+
 void GXSetDrawClassAurora(uint8_t drawClass) {
   GX_WRITE_AURORA(GX_AURORA_SET_DRAW_CLASS);
   GX_WRITE_U8(drawClass);

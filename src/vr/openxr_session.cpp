@@ -1,5 +1,8 @@
 #include "vr/openxr_session.h"
-#ifdef _WIN32
+#if defined(_WIN32) || defined(LM_VR_VISIONOS)
+#ifndef _WIN32
+#include "vr/visionos/xr_visionos.h"
+#endif
 #include <algorithm>
 #include <cstring>
 #include <cmath>
@@ -13,11 +16,24 @@ void check(XrResult result, const char* operation) {
     if (XR_FAILED(result)) throw std::runtime_error(std::string(operation)+" failed: "+std::to_string(result));
 }
 }
+#ifdef _WIN32
+#define XR_GRAPHICS_FUNCTIONS(F) F(GetD3D12GraphicsRequirementsKHR)
+using SwapchainImage = XrSwapchainImageD3D12KHR;
+constexpr XrStructureType kSwapchainImageType = XR_TYPE_SWAPCHAIN_IMAGE_D3D12_KHR;
+#else
+#define XR_GRAPHICS_FUNCTIONS(F)
+using SwapchainImage = XrSwapchainImageMetalMKW;
+constexpr XrStructureType kSwapchainImageType = XR_TYPE_SWAPCHAIN_IMAGE_METAL_MKW;
+// MTLPixelFormat values (no Metal header in this C++ file).
+constexpr std::int64_t kMtlRGBA8Unorm = 70, kMtlRGBA8UnormSrgb = 71, kMtlBGRA8Unorm = 80, kMtlBGRA8UnormSrgb = 81;
+#endif
 struct OpenXrSession::Impl {
+#ifdef _WIN32
     HMODULE loader = nullptr;
+#endif
     PFN_xrGetInstanceProcAddr getProc = nullptr;
 #define XR_FUNCTIONS(F) \
-    F(DestroyInstance) F(GetSystem) F(GetSystemProperties) F(GetD3D12GraphicsRequirementsKHR) \
+    F(DestroyInstance) F(GetSystem) F(GetSystemProperties) XR_GRAPHICS_FUNCTIONS(F) \
     F(EnumerateViewConfigurationViews) F(CreateSession) F(DestroySession) \
     F(CreateReferenceSpace) F(DestroySpace) F(EnumerateSwapchainFormats) \
     F(CreateSwapchain) F(DestroySwapchain) F(EnumerateSwapchainImages) \
@@ -201,15 +217,21 @@ struct OpenXrSession::Impl {
             get.action=stickAction;XrActionStateVector2f state{XR_TYPE_ACTION_STATE_VECTOR2F};check(GetActionStateVector2f(session,&get,&state),"get VR stick");if(state.isActive&&std::isfinite(state.currentState.x)&&std::isfinite(state.currentState.y)) out.stick={std::clamp(state.currentState.x,-1.0f,1.0f),std::clamp(state.currentState.y,-1.0f,1.0f)};
         }
     }
+#ifdef _WIN32
     XrGraphicsRequirementsD3D12KHR graphics{XR_TYPE_GRAPHICS_REQUIREMENTS_D3D12_KHR};
+#else
+    std::array<EyeImage,3> eyeImages{};
+    std::array<std::uint32_t,3> acquiredIndex{};
+    bool roomEnvironment=false,roomAlpha=false;
+#endif
     std::array<XrViewConfigurationView,2> sizes{{{XR_TYPE_VIEW_CONFIGURATION_VIEW},{XR_TYPE_VIEW_CONFIGURATION_VIEW}}};
     std::array<XrView,2> views{{{XR_TYPE_VIEW},{XR_TYPE_VIEW}}};
     std::array<XrSwapchain,3> swapchains{};
-    std::array<std::vector<XrSwapchainImageD3D12KHR>,3> images;
+    std::array<std::vector<SwapchainImage>,3> images;
     std::array<bool,3> acquired{}, rendered{}, hasImage{}, reused{};
     std::array<XrView,2> imageViews{{{XR_TYPE_VIEW},{XR_TYPE_VIEW}}};
     XrFrameState frame{XR_TYPE_FRAME_STATE};
-    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    SwapFormat format = SwapFormat{};
     bool running=false, frameOpen=false, poseValid=false, alive=true;
     template<class T> T function(const char* name) {
         PFN_xrVoidFunction out = nullptr;
@@ -228,30 +250,44 @@ struct OpenXrSession::Impl {
         }
         if(actionSet && DestroyActionSet) DestroyActionSet(actionSet);
         if (instance && DestroyInstance) DestroyInstance(instance);
+#ifdef _WIN32
         if (loader) FreeLibrary(loader);
+#endif
     }
 };
 OpenXrSession::OpenXrSession() : impl(std::make_unique<Impl>()) {}
 OpenXrSession::~OpenXrSession() = default;
 void OpenXrSession::prepare(const std::wstring& path) {
     auto& s=*impl;
+#ifdef _WIN32
     if (s.loader) throw std::logic_error("OpenXR already prepared");
     s.loader=LoadLibraryW(path.c_str());
     if (!s.loader) throw std::runtime_error("Cannot load OpenXR loader: "+std::to_string(GetLastError()));
     s.getProc=reinterpret_cast<PFN_xrGetInstanceProcAddr>(GetProcAddress(s.loader,"xrGetInstanceProcAddr"));
+#else
+    (void)path;
+    if (s.getProc) throw std::logic_error("OpenXR already prepared");
+    s.getProc=&xrGetInstanceProcAddr; // the provider, linked in
+#endif
     if (!s.getProc) throw std::runtime_error("Missing xrGetInstanceProcAddr");
     const auto enumerate=s.function<PFN_xrEnumerateInstanceExtensionProperties>("xrEnumerateInstanceExtensionProperties");
     uint32_t count=0;
     check(enumerate(nullptr,0,&count,nullptr),"enumerate extension count");
     std::vector<XrExtensionProperties> extensions(count,{XR_TYPE_EXTENSION_PROPERTIES});
     check(enumerate(nullptr,count,&count,extensions.data()),"enumerate extensions");
+#ifdef _WIN32
     if (std::none_of(extensions.begin(),extensions.end(),[](const auto& e){return std::strcmp(e.extensionName,XR_KHR_D3D12_ENABLE_EXTENSION_NAME)==0;}))
         throw std::runtime_error("OpenXR runtime does not support D3D12");
+#endif
     XrInstanceCreateInfo info{XR_TYPE_INSTANCE_CREATE_INFO};
     std::strcpy(info.applicationInfo.applicationName,"Luigis Mansion VR");
     std::strcpy(info.applicationInfo.engineName,"Aurora LMVR");
     info.applicationInfo.apiVersion=XR_MAKE_VERSION(1,0,0);
+#ifdef _WIN32
     std::vector<const char*> requested{XR_KHR_D3D12_ENABLE_EXTENSION_NAME};
+#else
+    std::vector<const char*> requested; // the provider's Metal binding needs no extension
+#endif
     s.frameProfile=std::any_of(extensions.begin(),extensions.end(),[](const auto& e){return std::strcmp(e.extensionName,"XR_VALVE_frame_controller_interaction")==0;});
     if(s.frameProfile) requested.push_back("XR_VALVE_frame_controller_interaction");
     const auto optional=[&](const char* name){const bool found=std::any_of(extensions.begin(),extensions.end(),[&](const auto& e){return std::strcmp(e.extensionName,name)==0;});if(found)requested.push_back(name);return found;};
@@ -266,11 +302,14 @@ void OpenXrSession::prepare(const std::wstring& path) {
 #undef XR_FUNCTIONS
     XrSystemGetInfo systemInfo{XR_TYPE_SYSTEM_GET_INFO}; systemInfo.formFactor=XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
     check(s.GetSystem(s.instance,&systemInfo,&s.system),"get HMD system");
+#ifdef _WIN32
     check(s.GetD3D12GraphicsRequirementsKHR(s.instance,s.system,&s.graphics),"get D3D12 graphics requirements");
+#endif
     check(s.EnumerateViewConfigurationViews(s.instance,s.system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,0,&count,nullptr),"get stereo view count");
     if (count!=2) throw std::runtime_error("Expected two stereo views");
     check(s.EnumerateViewConfigurationViews(s.instance,s.system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,2,&count,s.sizes.data()),"get stereo views");
 }
+#ifdef _WIN32
 const XrGraphicsRequirementsD3D12KHR& OpenXrSession::requirements() const {return impl->graphics;}
 void OpenXrSession::attach(ID3D12Device* device, ID3D12CommandQueue* queue) {
     auto& s=*impl;
@@ -281,6 +320,18 @@ void OpenXrSession::attach(ID3D12Device* device, ID3D12CommandQueue* queue) {
     XrGraphicsBindingD3D12KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D12_KHR}; binding.device=device; binding.queue=queue;
     XrSessionCreateInfo info{XR_TYPE_SESSION_CREATE_INFO}; info.next=&binding; info.systemId=s.system;
     check(s.CreateSession(s.instance,&info,&s.session),"create D3D12 session");
+#else
+bool OpenXrSession::running() const {return impl->running;}
+bool OpenXrSession::focused() const {return impl->focused;}
+bool OpenXrSession::alive() const {return impl->alive;}
+void OpenXrSession::setRoom(bool environment, bool projectionAlpha) {impl->roomEnvironment=environment;impl->roomAlpha=projectionAlpha;}
+void OpenXrSession::attach() {
+    auto& s=*impl;
+    if (!s.system || s.session) throw std::logic_error("Invalid OpenXR attach state");
+    XrGraphicsBindingMetalMKW binding{XR_TYPE_GRAPHICS_BINDING_METAL_MKW,nullptr,nullptr};
+    XrSessionCreateInfo info{XR_TYPE_SESSION_CREATE_INFO}; info.next=&binding; info.systemId=s.system;
+    check(s.CreateSession(s.instance,&info,&s.session),"create Metal session");
+#endif
     XrReferenceSpaceCreateInfo reference{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
     reference.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_LOCAL; reference.poseInReferenceSpace.orientation.w=1;
     check(s.CreateReferenceSpace(s.session,&reference,&s.space),"create local space");
@@ -290,9 +341,16 @@ void OpenXrSession::attach(ID3D12Device* device, ID3D12CommandQueue* queue) {
     check(s.EnumerateSwapchainFormats(s.session,0,&count,nullptr),"get format count");
     std::vector<int64_t> formats(count);
     check(s.EnumerateSwapchainFormats(s.session,count,&count,formats.data()),"get formats");
+#ifdef _WIN32
     for (auto candidate : {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,DXGI_FORMAT_R8G8B8A8_UNORM,DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,DXGI_FORMAT_B8G8R8A8_UNORM})
         if (std::find(formats.begin(),formats.end(),candidate)!=formats.end()) { s.format=candidate; break; }
     if (s.format==DXGI_FORMAT_UNKNOWN) throw std::runtime_error("No supported OpenXR color format");
+#else
+    // The compositor reads the images as sRGB; the IOSurfaces are 'BGRA'.
+    for (auto candidate : {kMtlBGRA8UnormSrgb,kMtlRGBA8UnormSrgb,kMtlBGRA8Unorm,kMtlRGBA8Unorm})
+        if (std::find(formats.begin(),formats.end(),candidate)!=formats.end()) { s.format=candidate; break; }
+    if (s.format==SwapFormat{}) throw std::runtime_error("No supported OpenXR color format");
+#endif
     for (unsigned eye=0;eye<3;++eye) {
         const auto& size=s.sizes[eye<2?eye:0];
         XrSwapchainCreateInfo chain{XR_TYPE_SWAPCHAIN_CREATE_INFO};
@@ -301,7 +359,7 @@ void OpenXrSession::attach(ID3D12Device* device, ID3D12CommandQueue* queue) {
         chain.height=size.recommendedImageRectHeight; chain.faceCount=chain.arraySize=chain.mipCount=1;
         check(s.CreateSwapchain(s.session,&chain,&s.swapchains[eye]),"create eye swapchain");
         check(s.EnumerateSwapchainImages(s.swapchains[eye],0,&count,nullptr),"get eye image count");
-        s.images[eye].assign(count,{XR_TYPE_SWAPCHAIN_IMAGE_D3D12_KHR});
+        s.images[eye].assign(count,{kSwapchainImageType});
         check(s.EnumerateSwapchainImages(s.swapchains[eye],count,&count,reinterpret_cast<XrSwapchainImageBaseHeader*>(s.images[eye].data())),"get eye images");
     }
 }
@@ -360,15 +418,26 @@ void OpenXrSession::pulse(unsigned hand,float amplitude,float seconds) {
 bool OpenXrSession::shouldRender() const {return impl->frameOpen && impl->frame.shouldRender && impl->poseValid;}
 const std::array<XrView,2>& OpenXrSession::views() const {return impl->views;}
 const std::array<XrViewConfigurationView,2>& OpenXrSession::viewSizes() const {return impl->sizes;}
-DXGI_FORMAT OpenXrSession::format() const {return impl->format;}
-ID3D12Resource* OpenXrSession::acquireEye(unsigned eye) {
+SwapFormat OpenXrSession::format() const {return impl->format;}
+EyeImage* OpenXrSession::acquireEye(unsigned eye) {
     auto& s=*impl;
     if (eye>=3 || !shouldRender() || s.acquired[eye]) throw std::logic_error("Invalid eye acquire state");
     XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO}; uint32_t index=0;
     check(s.AcquireSwapchainImage(s.swapchains[eye],&acquire,&index),"acquire eye image"); s.acquired[eye]=true;
     XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO}; wait.timeout=XR_INFINITE_DURATION;
     check(s.WaitSwapchainImage(s.swapchains[eye],&wait),"wait eye image");
+#ifdef _WIN32
     return s.images[eye].at(index).texture;
+#else
+    const auto& image=s.images[eye].at(index);
+    auto& out=s.eyeImages[eye];
+    out={};
+    out.ioSurface=image.ioSurface;out.texture=image.texture;
+    out.width=s.sizes[eye<2?eye:0].recommendedImageRectWidth;out.height=s.sizes[eye<2?eye:0].recommendedImageRectHeight;
+    xr_visionos_swapchain_image_acquire_fence(s.swapchains[eye],index,&out.acquireEvent,&out.acquireValue);
+    s.acquiredIndex[eye]=index;
+    return &out;
+#endif
 }
 bool OpenXrSession::reuseEye(unsigned eye) {
     auto& s=*impl;
@@ -378,6 +447,10 @@ bool OpenXrSession::reuseEye(unsigned eye) {
 void OpenXrSession::releaseEye(unsigned eye) {
     auto& s=*impl;
     if (eye>=3 || !s.acquired[eye]) throw std::logic_error("Eye image was not acquired");
+#ifndef _WIN32
+    // The compositor waits for the copy's writes before it reads the image.
+    xr_visionos_swapchain_image_set_release_fence(s.swapchains[eye],s.acquiredIndex[eye],s.eyeImages[eye].writeEvent,s.eyeImages[eye].writeValue);
+#endif
     XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     check(s.ReleaseSwapchainImage(s.swapchains[eye],&release),"release eye image"); s.acquired[eye]=false; s.rendered[eye]=true;s.hasImage[eye]=true;
     if(eye<2)s.imageViews[eye]=s.views[eye];
@@ -395,6 +468,9 @@ void OpenXrSession::endFrame(bool submitEyes, const XrPosef* panelPose, float pa
         view.subImage.imageRect.extent={int32_t(s.sizes[eye].recommendedImageRectWidth),int32_t(s.sizes[eye].recommendedImageRectHeight)};
     }
     XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION}; layer.space=s.space; layer.viewCount=2; layer.views=views.data();
+#ifndef _WIN32
+    if(s.roomAlpha) layer.layerFlags|=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+#endif
     const auto* header=reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer);
     std::array<XrCompositionLayerQuad,2> panels{};
     const XrCompositionLayerBaseHeader* layers[3]{header,nullptr};
@@ -417,6 +493,9 @@ void OpenXrSession::endFrame(bool submitEyes, const XrPosef* panelPose, float pa
         layers[layerCount++]=reinterpret_cast<const XrCompositionLayerBaseHeader*>(&overlay);
     }
     XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO}; end.displayTime=s.frame.predictedDisplayTime; end.environmentBlendMode=XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+#ifndef _WIN32
+    if(s.roomEnvironment) end.environmentBlendMode=XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND;  // the provider clears to the room
+#endif
     end.layerCount=submitEyes?layerCount:0; end.layers=submitEyes?layers:nullptr;
     const auto result=s.EndFrame(s.session,&end); s.frameOpen=false; check(result,"end frame");
 }

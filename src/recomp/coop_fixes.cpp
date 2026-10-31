@@ -1,5 +1,6 @@
 // Co-op improvements on top of the unused 2-player mode (coop.cpp): F1 > Enhancements >
 // Unused content "Co-op improvements", off by default. Docs: docs/UNUSED_CONTENT.md.
+#include "recomp/volume.h"
 #include "recomp/coop.h"
 #include "recomp/coop_test.h"
 
@@ -617,6 +618,7 @@ void drawP2Meter(Ctx& c, bool split) {
 }  // namespace
 
 HLE(fn_8003E7B0) {
+    volume::beforeOverlay();  // Apple Vision Pro, On your table: the scene's picture before the 2D
     if(vrhost::enabled()) {
         interp::TagScope hud(interp::TagCat::Hud,0x8003E7B0u);
         callOriginal(c,"fn_8003E7B0");

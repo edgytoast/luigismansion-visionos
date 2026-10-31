@@ -6,12 +6,14 @@
 #include "recomp/gx_bridge.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
+#include "recomp/host_thread.h"
 #include "recomp/interp.h"
 #include "recomp/model_viewer.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
 #include "recomp/skip.h"
 #include "recomp/vr_host.h"
+#include "recomp/volume.h"
 
 #include <aurora/aurora.h>
 #include <SDL3/SDL_timer.h>
@@ -77,7 +79,11 @@ bool interpolationWanted() {
 }  // namespace
 
 void start(Entry boot) {
+#if defined(__APPLE__)
+    startDetachedGuestHostThread([boot] {  // deep stack (host_thread.h); sBoot stays empty
+#else
     sBoot = std::thread([boot] {
+#endif
         cpu::setCurrent(cpu::Role::Guest);
         {
             std::unique_lock lk(sM);
@@ -159,6 +165,9 @@ float displayRefreshHz() {
 
 int targetFps() {
     if (vrhost::enabled()) return 90; // enables taped replay; xrWaitFrame owns headset pacing
+    // Apple Vision Pro, On your table: the game's own 30 frames, lockstep (the scene mirror records
+    // the frame as the game draws it; the volume's window ticks pace it, volume.h).
+    if (volume::enabled()) return port::kMinFps;
     const auto& v = port::settings().video;
     int fps = v.targetFps;
     if (v.unlimitedFps) return port::kMaxFps;

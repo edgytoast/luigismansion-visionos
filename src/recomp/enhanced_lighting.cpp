@@ -8,6 +8,7 @@
 #include "recomp/interp.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
+#include "recomp/volume.h"
 
 #include <aurora/enhanced.h>
 #include <dolphin/gx.h>
@@ -732,8 +733,10 @@ HLE(fn_8000BB98) {
     if (main) ghostlights::onMainView(c);  // ghost_lights.cpp: this frame's ghost lights
     if (main) worldlights::onMainView(c);  // world_lights.cpp: candles, fires, lamps, sprays
     if (main) enh::beginScene();
+    if (main) volume::sceneBegin();  // Apple Vision Pro, On your table: the scene mirror records from here
     callOriginal(c, "fn_8000BB98");
     if (main) enh::endScene();
+    if (main) volume::sceneEnd();  // and to here; the set's placement for this frame
 }
 
 }  // namespace recomp

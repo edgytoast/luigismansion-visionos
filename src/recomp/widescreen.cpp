@@ -1,5 +1,7 @@
 #include "recomp/widescreen.h"
 
+#include <cstdlib>
+
 #include "port/install.h"
 #include "port/options.h"
 #include "port/settings.h"
@@ -9,6 +11,7 @@
 #include "recomp/vr_host.h"
 #include "recomp/vr_avatar_guest.h"
 #include "recomp/skip.h"
+#include "recomp/volume.h"
 #include "recomp/coop.h"
 #include "recomp/guest_util.h"
 
@@ -124,6 +127,22 @@ HLE(fn_80008D58) {
         c.setSingle(2, float(c.f[2] * sides));
         c.setSingle(3, float(c.f[3] * inv));
         c.setSingle(4, float(c.f[4] * inv));
+    }
+    // Apple Vision Pro, On your table: the volume shows the whole room from the viewer's side, so
+    // what the flat camera's sides would cull (furniture, characters, effects just out of its
+    // picture) popped in on the set as the camera turned. In play, once the map has settled (its
+    // models loaded: volume::settled), the four sides open 8 times wider (the values are the near
+    // plane's extents, top = near * tan(fovY / 2) and so on, as the Hor+ scaling above widens them:
+    // about 13 degrees up becomes about 62); cutscenes keep the game's own (their authored shots hide
+    // things outside them). LM_VOLUME_CULL=<n> sets how many times wider (1: the game's own). (Base
+    // patch 0028 divided them, which narrowed the sides 8 times: the review caught it.)
+    static const double sVolumeWiden = [] {
+        const char* v = std::getenv("LM_VOLUME_CULL");
+        const double n = v && *v ? std::atof(v) : 8.0;
+        return n >= 1.0 ? n : 1.0;
+    }();
+    if (volume::settled() && sVolumeWiden > 1.0 && fullScreen && !sShadowLightSetup && !skip::cinematicCamera()) {
+        for (int k = 1; k <= 4; ++k) c.setSingle(k, float(c.f[k] * sVolumeWiden));
     }
     callOriginal(c, "fn_80008D58");
 }
@@ -317,6 +336,7 @@ HLE(fn_8000C598) {
 // Room name when entering a room: the floor (top right) and the room's name (top left).
 // Frame interpolation: text, shown at the game frame like every text box (tags.cpp fn_80044138).
 HLE(fn_80045BDC) {
+    volume::beforeOverlay();  // Apple Vision Pro, On your table: the scene's picture before the 2D
     AnchorScope s(kAnchorBySide);
     const int mode = tags::textMode();
     interp::tagLogMark("roomname begin");

@@ -19,6 +19,7 @@
 #include "recomp/silly.h"
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
+#include "recomp/volume.h"
 #include "port/settings.h"
 
 #include <cstring>
@@ -192,6 +193,7 @@ void emitProjection(ProjMode mode) {
         for (int j = 0; j < 4; j++) m[1][j] /= s;
     }
     const u32 at = mark3D();
+    if (sProj.type == GX_PERSPECTIVE) volume::notePerspective(m[0][0], m[1][1]);  // the volume's set
     GXSetProjection(m, sProj.type);
     interp::note(at, interp::Kind::Projection, 0, 0, 6);
     sProjEmitted = mode;

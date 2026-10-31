@@ -1,3 +1,6 @@
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 #include "window.hpp"
 
 #ifdef AURORA_ENABLE_GX
@@ -338,7 +341,12 @@ const AuroraEvent* poll_events() {
 
 bool create_window(AuroraBackend backend) {
   SDL_WindowFlags flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
-#if TARGET_OS_IOS || TARGET_OS_TV
+#if defined(__APPLE__) && TARGET_OS_VISION
+  // Apple Vision Pro: the window belongs to SDL's offscreen video driver
+  // (initialize() below) and is never shown. It must not start hidden, or
+  // is_paused() would wait for a show that never comes. Dawn's surface gets a
+  // CAMetalLayer of its own (lib/dawn/MetalBinding.mm).
+#elif TARGET_OS_IOS || TARGET_OS_TV
   flags |= SDL_WINDOW_FULLSCREEN;
 #else
   flags |= SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE;
@@ -429,6 +437,15 @@ bool initialize() {
   /* We don't want to initialize anything input related here, otherwise the add events will get lost to the void */
   TRY(SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight"), "Error setting {}: {}", SDL_HINT_ORIENTATIONS,
       SDL_GetError());
+#if defined(__APPLE__) && TARGET_OS_VISION
+  // Apple Vision Pro: the app is a SwiftUI ImmersiveSpace driven by
+  // CompositorServices, so SDL never owns a UIKit window or the main thread.
+  // Its offscreen driver keeps every video call free of UIKit, which lets the
+  // whole game run on a thread of its own; joysticks (GameController) and
+  // audio (CoreAudio) are unaffected.
+  TRY(SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen"), "Error setting {}: {}", SDL_HINT_VIDEO_DRIVER,
+      SDL_GetError());
+#endif
   TRY(SDL_InitSubSystem(SDL_INIT_EVENTS | SDL_INIT_VIDEO), "Error initializing SDL: {}", SDL_GetError());
   time::internal::set_pause_reason(time::internal::PauseReason::Surface,
                                    !g_surfaceReady.load(std::memory_order_acquire));

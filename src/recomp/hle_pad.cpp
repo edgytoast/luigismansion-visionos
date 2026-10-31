@@ -13,6 +13,7 @@
 #include "recomp/menu.h"
 #include "recomp/skip.h"
 #include "recomp/unused2.h"
+#include "recomp/volume.h"
 
 #include <dolphin/pad.h>
 
@@ -237,6 +238,7 @@ HLE(PADRead) {
             log("[pad] retrace %u frame %u: buttons %04X err %d", viRetraceCount(), skip::guestFrames(), st[0].button, st[0].err);
     }
     if(!menu::isOpen()&&vravatar::testDoorMovement(st[0].stickX,st[0].stickY))st[0].err=PAD_ERR_NONE;
+    if(!menu::isOpen())volume::applyMovement(st[0].stickX,st[0].stickY);  // On your table: from the volume's front
     skip::filterPad(st, PAD_MAX_CONTROLLERS);
     // 2-player co-op improvements: player 2's Game Boy Horror buttons do nothing, and player 2
     // has no input while an event has set them aside (coop_fixes.cpp).

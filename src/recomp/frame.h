@@ -41,5 +41,7 @@ void gxBlockingWait(void (*wait)());
 // frames with an alarm instead, so there a frame is finished at GXCopyDisp.
 bool presentOnCopy();
 bool viBlack();  // last VISetBlack
+// The calling guest thread sleeps until the next retrace (as VIWaitForRetrace does).
+void waitRetrace();
 
 }  // namespace recomp::frame

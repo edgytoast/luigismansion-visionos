@@ -12,6 +12,7 @@
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
 #include "recomp/version.h"
+#include "recomp/volume.h"
 
 #include <algorithm>
 #include <cmath>
@@ -402,6 +403,7 @@ HLE(fn_80081BCC) {
     const u32 ghost = inMem1(cap) ? rd32(cap + 0x18) : 0;
     if (!inMem1(ghost)) return hm::callWithFlag(c,"fn_80081BCC");
     ghostlights::onVacuumTick(ghost);vravatar::noteCapturedGhost(ghost);
+    volume::noteCapture(ghost);  // On your table: the game's own shot in its square while capturing
     const s32 before=rds16(ghost+0xFC);
     static const bool gateTest=std::getenv("LM_VR_CAPTURE_GATE_TEST")!=nullptr;
     static unsigned testTicks=0;

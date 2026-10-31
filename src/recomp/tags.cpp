@@ -17,6 +17,9 @@
 #include "recomp/vr_avatar_guest.h"
 #include "recomp/widescreen.h"
 #include "recomp/guest_util.h"
+#include "recomp/volume.h"
+
+#include <aurora/mirror.h>
 
 #include <cmath>
 #include <cstdio>
@@ -431,6 +434,8 @@ HLE(fn_8001F138) {
 HLE(fn_80015CF4) {
     registerSiteTags();
     RoomModelScope model(sObjectDepth==0 && c.r[4]==0?c.r[3]:0);
+    // Apple Vision Pro, On your table: the room's own shell, which the volume keeps through cutscenes.
+    volume::MirrorScope worldModel(aurora::mirror::MarkWorld, sObjectDepth==0 && c.r[4]==0);
     TagScope t(sObjectDepth > 0 || c.r[4] != 0 ? TagCat::Object : TagCat::World, c.r[3], c.r[4], c.r[5] & 0xFF);
     const u32 object=c.r[3],pass=c.r[5],alpha=c.r[6];
     const bool staticRoom=sObjectDepth==0 && c.r[4]==0;
@@ -768,6 +773,7 @@ int textMode() {
 bool textBoxShown() { return textMode() != 0 && sTextBoxFrame != ~0u && copyDispCount() - sTextBoxFrame <= 1; }
 }  // namespace tags
 HLE(fn_80044138) {
+    volume::beforeOverlay();  // Apple Vision Pro, On your table: the scene's picture before the 2D
     if (!interp::capturing()) return callOriginal(c, "fn_80044138");
     const int mode = tags::textMode();
     interp::tagLogMark("textbox begin");
@@ -810,6 +816,9 @@ HLE(fn_8002FA34) {
     // that draws it).
     static const bool sHide = std::getenv("LM_SKY_HIDE") != nullptr;
     if (sHide) return;
+    // On the table (the volume) the set leaves the sky out: a ball seen from outside, it hid an
+    // outdoor room or a boss's arena behind a shell. The game's own picture keeps it.
+    volume::MirrorScope noSky(aurora::mirror::MarkSky, true);
     if (!interp::capturing()) return callOriginal(c, "fn_8002FA34");
     interp::tagLogMark("sky begin");
     if (skyLocked()) {

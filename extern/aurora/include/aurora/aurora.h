@@ -136,6 +136,10 @@ void aurora_end_frame_offscreen();
 
 void aurora_set_log_level(AuroraLogLevel level);
 void aurora_set_pause_on_focus_lost(bool value);
+/** Holds the game clock still while true, on top of aurora's own window and
+ * background pauses: for a host that knows the game isn't being seen (a VR
+ * session that lost focus, a headset taken off). */
+void aurora_set_external_pause(bool paused);
 void aurora_set_background_input(bool value);
 void aurora_set_resampler(AuroraSampler sampler);
 /** Sets the clock timescale. Default 1.0f. 0.0f is paused. Range 0.0f-16.0f. */

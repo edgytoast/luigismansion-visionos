@@ -58,6 +58,9 @@ struct ColorPassDescriptor {
 };
 
 void finish();
+// push_encoder_task from the thread recording the GX stream (the FIFO thread), which mustn't drain
+// itself: the task lands exactly where the stream is (aurora/mirror.h's shadow captures).
+bool push_encoder_task_in_stream(EncoderTaskId type, const void* payload, size_t payloadSize);
 void begin_color_pass(const ColorPassDescriptor& desc);
 void end_color_pass();
 void queue_texture_copy(wgpu::TexelCopyTextureInfo src, wgpu::TexelCopyTextureInfo dst, wgpu::Extent3D size);

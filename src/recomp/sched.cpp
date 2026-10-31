@@ -2,6 +2,7 @@
 
 #include "recomp/cpu_qos.h"
 #include "recomp/hle.h"
+#include "recomp/host_thread.h"
 
 #include <cstring>
 #include <algorithm>
@@ -253,8 +254,12 @@ bool create(u32 guest, u32 entry, u32 arg, u32 stackTop, u32 stackSize, s32 prio
         sThreads.push_back(t);
         ++sLive;
     }
+#if defined(__APPLE__)
+    startDetachedGuestHostThread([t] { threadMain(t); });  // deep stack (host_thread.h)
+#else
     t->host = std::thread(threadMain, t);
     t->host.detach();
+#endif
     return true;
 }
 

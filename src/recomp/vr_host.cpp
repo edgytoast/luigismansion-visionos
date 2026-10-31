@@ -1,6 +1,6 @@
 #include "recomp/vr_host.h"
 #include "recomp/test_checkpoints.h"
-#if defined(LM_VR_OPENXR) && defined(_WIN32)
+#if defined(LM_VR_OPENXR) && (defined(_WIN32) || defined(LM_VR_VISIONOS))
 #include "vr/openxr_session.h"
 #include "vr/dawn_eye_output.h"
 #include "port/install.h"
@@ -8,7 +8,13 @@
 #include "recomp/menu.h"
 #include "webgpu/gpu.hpp"
 #include "gfx/render_worker.hpp"
+#ifdef _WIN32
 #include <dawn/native/D3D12Backend.h>
+#endif
+#ifdef LM_VR_VISIONOS
+#include <aurora/gfx.hpp>
+#include "lmvr_game_hooks.h"  // the port's visionOS host
+#endif
 #include <imgui.h>
 #include "imgui.hpp"
 #include <SDL3/SDL.h>
@@ -37,6 +43,7 @@ std::atomic<bool> sTrackedArms{true};
 std::atomic<bool> sShortForearms{false};
 std::atomic<bool> sInvertRightY{false};
 std::atomic<bool> sExpandedStoryScenes{true};
+std::atomic<bool> sWorldLockedSet{true},sSetSlide{false};
 std::atomic<float> sHudX{0},sHudY{-0.48f},sHudSpread{0.08f};
 std::array<std::atomic<float>,2> sHandRollDegrees{60.8f,-60.8f};
 std::atomic<bool> sMirrorAvatarTracking{true};
@@ -110,7 +117,7 @@ vr::Matrix inverseUniform(const vr::Matrix& m) {
 }
 std::string sDefaultSettings;
 void writeSettings(std::ostream& file) {
-    file<<int(sOptions.mode)<<' '<<sOptions.miniatureScale<<' '<<sOptions.viewingDistance<<' '<<sOptions.unitsPerMetre<<' '<<sOptions.verticalOffset<<' '<<int(sHideRoomFrames.load())<<' '<<sAnimationDepth<<' '<<sDialogueLift<<' '<<int(sConservativeVisibility.load())<<' '<<sEyeHeight<<' '<<sEyeForward<<' '<<int(sTrackedArms.load())<<' '<<sHandOutwardDegrees.load()<<' '<<sHandHeightAdjustment.load()<<' '<<sHandForwardAdjustment.load()<<' '<<int(sShortForearms.load())<<' '<<int(sMirrorAvatarTracking.load())<<' '<<int(sHandDirectedTools.load())<<' '<<int(sBeltEquipment.load())<<' '<<int(sFlashlightLeft.load())<<' '<<int(sPoltergustLeft.load())<<' '<<int(sGameBoyLeft.load())<<' '<<0<<' '<<0<<' '<<int(sMotionCounterPull.load())<<' '<<int(sInventoryToolbar.load())<<' '<<int(sPhysicalDoors.load())<<' '<<sToolbarDrop.load()<<' '<<sToolbarReach.load()<<' '<<38<<' '<<sHandRollDegrees[0].load()<<' '<<sHandRollDegrees[1].load()<<' '<<sMirrorHandHeight.load()<<' '<<int(sGrabGameBoy.load())<<' '<<int(sInvertRightY.load())<<' '<<sHudX.load()<<' '<<sHudY.load()<<' '<<sHudSpread.load()<<' '<<int(sExpandedStoryScenes.load())<<'\n';
+    file<<int(sOptions.mode)<<' '<<sOptions.miniatureScale<<' '<<sOptions.viewingDistance<<' '<<sOptions.unitsPerMetre<<' '<<sOptions.verticalOffset<<' '<<int(sHideRoomFrames.load())<<' '<<sAnimationDepth<<' '<<sDialogueLift<<' '<<int(sConservativeVisibility.load())<<' '<<sEyeHeight<<' '<<sEyeForward<<' '<<int(sTrackedArms.load())<<' '<<sHandOutwardDegrees.load()<<' '<<sHandHeightAdjustment.load()<<' '<<sHandForwardAdjustment.load()<<' '<<int(sShortForearms.load())<<' '<<int(sMirrorAvatarTracking.load())<<' '<<int(sHandDirectedTools.load())<<' '<<int(sBeltEquipment.load())<<' '<<int(sFlashlightLeft.load())<<' '<<int(sPoltergustLeft.load())<<' '<<int(sGameBoyLeft.load())<<' '<<0<<' '<<0<<' '<<int(sMotionCounterPull.load())<<' '<<int(sInventoryToolbar.load())<<' '<<int(sPhysicalDoors.load())<<' '<<sToolbarDrop.load()<<' '<<sToolbarReach.load()<<' '<<38<<' '<<sHandRollDegrees[0].load()<<' '<<sHandRollDegrees[1].load()<<' '<<sMirrorHandHeight.load()<<' '<<int(sGrabGameBoy.load())<<' '<<int(sInvertRightY.load())<<' '<<sHudX.load()<<' '<<sHudY.load()<<' '<<sHudSpread.load()<<' '<<int(sExpandedStoryScenes.load())<<' '<<int(sWorldLockedSet.load())<<' '<<int(sSetSlide.load())<<'\n';
 }
 void readSettings(std::istream& file) {
     int mode=0;float scale=0.05f,distance=0.8f,units=100;
@@ -158,6 +165,9 @@ void readSettings(std::istream& file) {
     if(file>>hx>>hy>>hs && std::isfinite(hx)&&std::isfinite(hy)&&std::isfinite(hs)){sHudX.store(std::clamp(hx,-0.6f,0.6f));sHudY.store(std::clamp(hy,-0.6f,0.6f));sHudSpread.store(std::clamp(hs,-0.4f,0.4f));}
     else {sHudX.store(0);sHudY.store(-0.48f);sHudSpread.store(0.08f);}
     sExpandedStoryScenes.store(true);int expanded=1;if(file>>expanded)sExpandedStoryScenes.store(expanded!=0);
+    sWorldLockedSet.store(true);sSetSlide.store(false);
+    int locked=1;if(file>>locked)sWorldLockedSet.store(locked!=0);
+    int slide=0;if(file>>slide)sSetSlide.store(slide!=0);
     sInventoryToolbar.store(false); // retired invisible/key toolbar; retain legacy ini fields
  }
 
@@ -181,6 +191,7 @@ void loadMode(int mode) {
 bool prepare() {
     const char* requested=std::getenv("LM_VR");
     if(!requested || std::string(requested)!="1") return false;
+#ifdef _WIN32
     const wchar_t* loader=_wgetenv(L"LM_OPENXR_LOADER");
     if(!loader || !std::filesystem::path(loader).is_absolute())
         throw std::runtime_error("VR launch requires LM_OPENXR_LOADER pointing to the installed OpenXR loader DLL");
@@ -189,6 +200,10 @@ bool prepare() {
     const auto packed=(uint64_t(uint32_t(luid.HighPart))<<32)|luid.LowPart;
     char text[32];std::snprintf(text,sizeof(text),"%llx",static_cast<unsigned long long>(packed));
     _putenv_s("LM_XR_ADAPTER_LUID",text);
+#else
+    // Apple Vision Pro: the OpenXR provider is linked in (no loader); its system is the headset.
+    sSession=std::make_unique<lmvr::OpenXrSession>(); sSession->prepare(L"");
+#endif
     std::ostringstream defaults;writeSettings(defaults);sDefaultSettings=defaults.str();
     std::ifstream file(port::configDir()/"vr.ini");
     readSettings(file);
@@ -206,10 +221,36 @@ bool prepare() {
     return true;
 }
 bool enabled() {return sEnabled;}
+bool sessionHeld() {
+#ifdef LM_VR_VISIONOS
+    // Not running yet, or stopped by the Digital Crown (the provider waits in IDLE for a new
+    // layer), or no longer focused once it was (headset off, visionOS over the game).
+    static bool everFocused=false,everRan=false,wasRunning=false;
+    if(!sEnabled||!sSession) return false;
+    if(!sSession->poll()) return false; // lost: beginFrame reports it
+    if(sSession->focused() && !everFocused) {everFocused=true;lmvr_visionos_mark_session_focused();}
+    // A space reopened after the Digital Crown has an origin of its own (where you stand now):
+    // the diorama recentres in front of you, as at the start.
+    const bool running=sSession->running();
+    if(running && !wasRunning && everRan) {recenter();log("[vr] session running again: recentred");}
+    if(running) everRan=true;
+    wasRunning=running;
+    return !running || (everFocused && !sSession->focused());
+#else
+    return false;
+#endif
+}
 void attach() {
     if(!sEnabled) return;
     auto device=aurora::webgpu::g_device;
+#ifdef _WIN32
     sSession->attach(dawn::native::d3d12::GetD3D12Device(device.Get()).Get(),dawn::native::d3d12::GetD3D12CommandQueue(device.Get()).Get());
+#else
+    sSession->attach();
+    // Nobody sees SDL's offscreen window: the frame reaches the eyes through vr_present_target
+    // (drawn whatever the window does), so skip acquiring and presenting its surface.
+    aurora::gfx::set_surface_present_suppressed(true);
+#endif
     for(unsigned eye=0;eye<3;++eye) {
         sOutput[eye]=std::make_unique<lmvr::DawnEyeOutput>();
         const auto& view=sSession->viewSizes()[eye<2?eye:0];
@@ -260,6 +301,9 @@ void beginFrame() {
     aurora::imgui::set_input_callback(updateSettingsInput);
     sRender=false;
     if(!sEnabled) return;
+#ifdef LM_VR_VISIONOS
+    aurora::gfx::request_room_depth(lmvr_visionos_room_enabled());  // before this frame records
+#endif
     if(!sSession->poll()) throw std::runtime_error("OpenXR runtime requested session exit; restart to reconnect");
     sFrame=sSession->beginFrame();
     if(!sFrame) {
@@ -291,6 +335,7 @@ void beginFrame() {
         auto headPose=pose(views[0].pose);
         for(unsigned k=0;k<3;++k)headPose.position[k]=(pose(views[0].pose).position[k]+pose(views[1].pose).position[k])*0.5f;
         camera.dialogueHud=vr::hudMapping(camera.projection,pose(view.pose),headPose);
+        camera.eyeFromRoom=vr::multiply(vr::inversePose(pose(view.pose)),vr::poseMatrix(sOrigin));
     }
     const auto reference=vr::inversePose(sOrigin);
     const auto head=vr::multiply(reference,vr::poseMatrix(pose(views[0].pose)));
@@ -418,6 +463,123 @@ std::array<float,3> hudLayout(){return {sHudX.load(),sHudY.load(),sHudSpread.loa
 float dialogueLift() {return sOptions.mode==vr::ViewMode::Diorama && sScriptedWorld ? std::min(sDialogueLift,0.08f) : sDialogueLift;}
 bool gameBoyGrabbable(){return sGrabGameBoy.load();}
 bool diorama() {return sEnabled && sOptions.mode==vr::ViewMode::Diorama;}
+namespace {
+// The world-locked set (dioramaSet). Placed at a room or map change, a real camera cut outside
+// scripted scenes, the return to the world from a panel; recentred (a shift, never a turn) when
+// Luigi leaves the comfortable zone; held otherwise.
+struct DioramaSetState {
+    bool valid=false,worldBefore=false,cameraSeen=false,provisional=false;
+    unsigned map=~0u;
+    int room=-2,pendingRoom=-2,pendingFrames=0;
+    vr::SetPlacement placement;
+    float dy=0;         // the camera's height above Luigi at the placement (game units)
+    float centre[2]{};  // where Luigi stood (in the room, metres) after the last placement or recentre
+    float shift[2]{};   // horizontal offset of the set since the placement (recentres, the slide)
+    std::array<float,3> lastCamera{};
+    float lastHeading=0;
+    std::chrono::steady_clock::time_point last{};
+};
+DioramaSetState sSet;
+float snapQuarter(float yaw) {const float q=1.5707963f;return std::round(yaw/q)*q;}
+}
+bool dioramaSet(const vr::Matrix& view,const vr::PlayerAnchor& player,unsigned map,int room,bool cut,vr::Matrix& setFromWorld) {
+    if(!diorama() || !sWorldLockedSet.load()) {sSet.valid=false;return false;}
+    if(sEye==0) {
+        const auto now=std::chrono::steady_clock::now();
+        const float dt=sSet.last.time_since_epoch().count()?std::clamp(std::chrono::duration<float>(now-sSet.last).count(),0.f,0.25f):0.f;
+        sSet.last=now;
+        const bool returned=!sSet.worldBefore;  // first tracked-world frame after a panel
+        sSet.worldBefore=true;
+        const vr::Matrix world=vr::worldFromView(view);
+        // The placement keeps the composition the game camera had at that moment, without its
+        // pitch or roll: its position goes where the original diorama put it (behind your eyes:
+        // the Depth offset slider), turned only about the vertical, snapped to 90 degrees.
+        const std::array<float,3> camera{world[3],world[7],world[11]};
+        const float heading=vr::viewHeading(view);
+        // What it looks at: Luigi when tracked, else 6 m ahead of the camera.
+        std::array<float,3> focus{world[3]-world[2]*600.f,world[7]-world[6]*600.f,world[11]-world[10]*600.f};
+        if(player.valid) focus=player.position;
+        const float scale=sOptions.miniatureScale/sOptions.unitsPerMetre;
+        // A camera cut counts when the camera really jumped since the last frame (the replay's cut
+        // flag also marks view-structure changes, and repeats for every present of a tape).
+        bool jumped=false;
+        if(sSet.cameraSeen) {
+            const float moved=std::hypot(camera[0]-sSet.lastCamera[0],camera[1]-sSet.lastCamera[1],camera[2]-sSet.lastCamera[2]);
+            const float turned=std::fabs(std::remainder(heading-sSet.lastHeading,6.2831853f));
+            jumped=moved>250.f || turned>0.5236f;
+        }
+        sSet.lastCamera=camera;sSet.lastHeading=heading;sSet.cameraSeen=true;
+        // A room change counts once the new room has held for a few frames (no flicker at
+        // open passages).
+        bool roomChanged=false;
+        if(room!=sSet.room) {
+            if(room!=sSet.pendingRoom){sSet.pendingRoom=room;sSet.pendingFrames=0;}
+            roomChanged=++sSet.pendingFrames>=3 || !sSet.valid;
+        } else sSet.pendingFrames=0;
+        // The game's placeholder camera (no rotation at all) before its own is set up: a placement
+        // made from it is provisional, replaced by the first real camera even in a cutscene.
+        const bool placeholder=std::fabs(view[0]-1.f)<1e-5f && std::fabs(view[5]-1.f)<1e-5f && std::fabs(view[10]-1.f)<1e-5f;
+        const bool upgrade=sSet.valid && sSet.provisional && !placeholder;
+        const bool cameraCut=(cut || jumped) && jumped && !sScriptedWorld;
+        const bool onlyReturned=returned && sSet.valid && map==sSet.map && !roomChanged && !cameraCut && !upgrade;
+        const bool refit=!sSet.valid || map!=sSet.map || roomChanged || returned || cameraCut || upgrade;
+        const auto placedAt=[&](const vr::Matrix& m,const std::array<float,3>& p,float& x,float& z) {
+            x=m[0]*p[0]+m[1]*p[1]+m[2]*p[2]+m[3];
+            z=m[8]*p[0]+m[9]*p[1]+m[10]*p[2]+m[11];
+        };
+        if(refit) {
+            sSet.placement.anchor=camera;
+            sSet.placement.yaw=snapQuarter(heading);
+            sSet.dy=focus[1]-camera[1];
+            sSet.shift[0]=sSet.shift[1]=0;
+            sSet.valid=true;sSet.map=map;sSet.room=room;sSet.pendingFrames=0;sSet.provisional=placeholder;
+        }
+        // Where the set is now: the camera's place behind you plus the shift; Luigi's floor 0.45 m
+        // below your eyes at the default Scene height (the sliders apply live).
+        sSet.placement.scale=scale;
+        sSet.placement.at={sSet.shift[0],sOptions.verticalOffset-0.25f-scale*sSet.dy,-sOptions.viewingDistance+sSet.shift[1]};
+        float x=0,z=0;
+        placedAt(vr::setFromWorld(sSet.placement),focus,x,z);
+        if(refit) {
+            // Luigi starts in front of you: if the snapped heading or a close camera put him to the
+            // side or behind, the set shifts (never turns) to bring him ahead.
+            if(std::fabs(std::atan2(x,-z))>1.0472f || z>-0.2f) {
+                sSet.shift[0]-=x;sSet.shift[1]+=-0.85f-z;
+                sSet.placement.at={sSet.shift[0],sSet.placement.at[1],-sOptions.viewingDistance+sSet.shift[1]};
+                placedAt(vr::setFromWorld(sSet.placement),focus,x,z);
+            }
+            sSet.centre[0]=x;sSet.centre[1]=z;
+            // A short fade covers the step, except on a return from a panel (setWorldScene decides
+            // those: the map and the search camera switch directly).
+            if(!onlyReturned) {sTransition=std::chrono::steady_clock::now();sGain=0;}
+            log("[vr set] placed: map %u room %d, camera %.0f %.0f %.0f, Luigi at %.2f %.2f m, heading %.0f deg%s",map,room,
+                camera[0],camera[1],camera[2],x,z,sSet.placement.yaw*57.29578f,returned?" (back from a panel)":"");
+        } else if(player.valid && !sScriptedWorld) {
+            const float dx=x-sSet.centre[0],dz=z-sSet.centre[1];
+            const float fromCentre=std::hypot(dx,dz);
+            const float bearing=std::fabs(std::atan2(x,-z));
+            if(sSetSlide.load()) {
+                // Option: a lazy slide (no turning) that keeps Luigi within 0.35 m of the centre.
+                constexpr float deadZone=0.35f;
+                if(fromCentre>deadZone) {
+                    const float k=1.f-std::exp(-dt/1.2f);
+                    const float excess=(fromCentre-deadZone)/fromCentre;
+                    sSet.shift[0]-=dx*excess*k;sSet.shift[1]-=dz*excess*k;
+                }
+            } else if(fromCentre>1.0f || bearing>1.0472f) {
+                // Past 1 m, or out of the forward +/-60 degrees: Luigi back where he stood, in one
+                // step behind a short fade.
+                sSet.shift[0]-=dx;sSet.shift[1]-=dz;
+                sTransition=std::chrono::steady_clock::now();sGain=0;
+                log("[vr set] recentred: Luigi had moved %.2f m (bearing %.0f deg)",fromCentre,bearing*57.29578f);
+            }
+            sSet.placement.at={sSet.shift[0],sSet.placement.at[1],-sOptions.viewingDistance+sSet.shift[1]};
+        }
+    }
+    if(!sSet.valid) return false;
+    setFromWorld=vr::setFromWorld(sSet.placement);
+    return true;
+}
 bool conservativeVisibility() {return sEnabled && sConservativeVisibility.load(std::memory_order_relaxed);}
 const std::array<AvatarHand,2>& avatarHands() {return sHands;}
 float firstPersonHeading(float initialYaw,unsigned actorId) {
@@ -738,6 +900,20 @@ void copyEye(unsigned eye) {
         log("[vr] game eye render source: %ux%u",width,height);
     }
     sPanelAspect=float(source.size.width)/float(source.size.height);
+#ifdef LM_VR_VISIONOS
+    {
+        // The mansion in your room (the launcher's mixed space): the tracked world's eyes are
+        // transparent where the frame drew nothing; menu panels stay whole screens.
+        // The scene's depth: aurora's snapshot from before the frame's scene copy cleared it (the
+        // game pastes its 3D scene back as a flat picture), else the EFB depth itself.
+        const bool roomSpace=lmvr_visionos_room_enabled();
+        const auto snapshot=aurora::gfx::room_depth();
+        const bool efbDepth=!snapshot && aurora::webgpu::g_graphicsConfig.msaaSamples<=1 && aurora::webgpu::g_depthBuffer.view;
+        const bool room=roomSpace && !sPanel && !sStereoPanel && (snapshot || efbDepth);
+        sOutput[eye]->setRoomMask(!room?wgpu::TextureView{}:snapshot?snapshot:aurora::webgpu::g_depthBuffer.view,bool(snapshot));
+        sSession->setRoom(roomSpace,room);
+    }
+#endif
     auto* image=sSession->acquireEye(eye);
     sOutput[eye]->copy(source.view,source.sampler,image,sGain);
     sSession->releaseEye(eye);
@@ -780,7 +956,7 @@ void setWorldScene(bool world, bool cinematic, bool scriptedWorld, float scripte
     sForwardShot=forwardShot;
     if(sCreditsView){if(std::isfinite(scriptedFocus)&&scriptedFocus>1)sCreditsFocus=scriptedFocus;
         sScriptedFocus=sCreditsFocus;}else sScriptedFocus=scriptedFocus;
-    if(!world) {std::lock_guard lock(sMovementMutex);sMovementActive=false;}
+    if(!world) {std::lock_guard lock(sMovementMutex);sMovementActive=false;sSet.worldBefore=false;}
     const bool changed=(sPanel==world) || (sStereoPanel!=cinematic) || (!firstPerson() && !diorama() && sScriptedWorld!=scriptedWorld);
     sScriptedWorld=scriptedWorld;
     sStereoPanel=cinematic;
@@ -893,6 +1069,16 @@ void drawMenu() {
         ImGui::TreePop();
     }
     if(diorama()) {
+        bool follows=!sWorldLockedSet.load();
+        if(ImGui::Checkbox("The set follows the game camera (original)",&follows)){sWorldLockedSet.store(!follows);changed=true;}
+        ImGui::SetItemTooltip("Off (default): the room stays put in front of you, placed once per room and at camera cuts.\n"
+                              "On: the miniature turns and moves with every game camera move, as in the original VR build.");
+        if(!follows) {
+            bool slide=sSetSlide.load();
+            if(ImGui::Checkbox("Slide the set to keep Luigi near the centre",&slide)){sSetSlide.store(slide);changed=true;}
+            ImGui::SetItemTooltip("Off (default): when Luigi leaves the middle of the room you're looking at, the set recentres in one step behind a short fade.\n"
+                                  "On: it slides slowly, without turning.");
+        }
         bool expanded=sExpandedStoryScenes.load();
         if(ImGui::Checkbox("All story and item scenes in diorama 3D",&expanded)){sExpandedStoryScenes.store(expanded);changed=true;}
         ImGui::SetItemTooltip("Experimental general rule for boss, event, door and item animations.\n"
@@ -928,7 +1114,7 @@ void shutdown() {
 }
 #else
 namespace recomp::vrhost {
-bool prepare(){return false;} bool enabled(){return false;} void attach(){} void beginFrame(){}
+bool prepare(){return false;} bool enabled(){return false;} bool sessionHeld(){return false;} void attach(){} void beginFrame(){}
 bool rendering(){return false;} bool panelMode(){return false;} void selectEye(unsigned){} unsigned eyeIndex(){return 0;} const EyeCamera* activeEye(){return nullptr;}
 float firstPersonHeading(float yaw,unsigned){return yaw;}
 void setMovementView(const vr::Matrix&){}
@@ -976,6 +1162,7 @@ std::array<float,3> hudLayout(){return {0,0,0};}
 float dialogueLift(){return 0.0f;}
 bool conservativeVisibility(){return false;}
 bool diorama(){return false;}
+bool dioramaSet(const vr::Matrix&,const vr::PlayerAnchor&,unsigned,int,bool,vr::Matrix&){return false;}
 bool gameBoyGrabbable(){return false;}
 void drawControlOptions(){}
 void holdSearchTransition(bool){}

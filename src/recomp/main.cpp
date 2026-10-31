@@ -31,7 +31,11 @@
 #include "recomp/sched.h"
 #include "recomp/widescreen.h"
 #include "recomp/vr_host.h"
+#ifdef LM_VR_VISIONOS
+#include "lmvr_game_hooks.h"  // the port's visionOS host (luigismansion-visionos/visionos/host)
+#endif
 #include "recomp/test_checkpoints.h"
+#include "recomp/volume.h"
 #ifndef LM_STATIC_MODULE
 #include "setup/setup.h"
 #endif
@@ -185,7 +189,13 @@ void hangDetail(char* out, size_t size, bool stallBegins) {
 }  // namespace
 }  // namespace recomp
 
+#ifdef LM_VR_VISIONOS
+// Apple Vision Pro: SwiftUI owns main(); the host runs the game on a thread of its own once the
+// immersive space exists (lmvr_game_hooks.h).
+extern "C" int lmvr_game_main(int argc, char* argv[]) {
+#else
 int main(int argc, char* argv[]) {
+#endif
     using namespace recomp;
     // Windows: no console window for players; output to a terminal, a redirect or last_run.log.
     port::recovery::setupConsole(argc, argv);
@@ -224,9 +234,17 @@ int main(int argc, char* argv[]) {
             port::settings().rendering.textureCopyFilter = false;
             port::settings().rendering.displayCopyFilter = false;
         }
+        // Apple Vision Pro, On your table: the frames go to the volume in IOSurfaces (five slots,
+        // up to four images each) and the panel, every frame copied at the game's size: the window's
+        // own size, or at most 2x (from Full's settings, up to 8). And the VR mode's tested renderer settings:
+        // enhanced lighting (its lights and shadow maps are aurora's, which the scene mirror doesn't
+        // carry to the set: the GPU time would go on a picture nobody sees) and the copy filters
+        // off. In memory only: saving writes the player's own (volume::applySettingsOverrides).
+        volume::applySettingsOverrides();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "[vr] %s\n", error.what());
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "VR startup failed", error.what(), nullptr);
+        if (!std::getenv("LM_BACKGROUND"))  // (Apple Vision Pro sets it: no UIKit off the main thread)
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "VR startup failed", error.what(), nullptr);
         return 1;
     }
     // Start-up recovery (docs/SETUP.md "When the game does not start"): after a start that failed,
@@ -272,7 +290,11 @@ int main(int argc, char* argv[]) {
     // LM_ALLOW_CPU_GPU=1: accept a software renderer (e.g. Mesa llvmpipe for Vulkan in WSL or a
     // VM without GPU passthrough; docs/LINUX.md). Slow, for testing only.
     if (const char* c = std::getenv("LM_ALLOW_CPU_GPU"); c && *c == '1') config.allowCpuAdapter = true;
+#ifdef LM_VR_VISIONOS
+    config.desiredBackend = BACKEND_METAL;  // the OpenXR provider's images are IOSurfaces
+#else
     if (vrhost::enabled()) config.desiredBackend = BACKEND_D3D12;
+#endif
     // LM_CACHE_DIR: separate shader/pipeline cache, e.g. for test runs of different builds side by side.
     // Default: next to settings.ini, so a scratch APPDATA (test runs) also gets its own cache
     // (Aurora's default, SDL_GetPrefPath, ignores the APPDATA variable).
@@ -340,6 +362,16 @@ int main(int argc, char* argv[]) {
         inst.palReady = inst.running == port::GameVersion::PAL;
         inst.hmOverlayReady = true;  // dev: orig/hidden_mansion (tools/hidden_mansion_data.py), both directions
     }
+#ifdef LM_VR_VISIONOS
+    // Built without a recompiled module (no disc when it was built): the VR pipeline runs with
+    // the F1 menu and a notice instead of the game (visionos/game/no_game.cpp in the port).
+    if (std::strcmp(wantId, "NONE") == 0) {
+        const int code = lmvr_visionos_no_game();
+        vrhost::shutdown();
+        aurora_shutdown();
+        return code;
+    }
+#endif
 #else
     // LuigisMansionRecomp: set up from the user's discs (first run, or after changes).
     setup::Options so;
@@ -377,7 +409,8 @@ int main(int argc, char* argv[]) {
     try { vrhost::attach(); }
     catch (const std::exception& error) {
         std::fprintf(stderr, "[vr] %s\n", error.what());
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "VR graphics setup failed", error.what(), aurora_get_window());
+        if (!std::getenv("LM_BACKGROUND"))
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "VR graphics setup failed", error.what(), aurora_get_window());
         vrhost::shutdown(); aurora_shutdown(); return 1;
     }
     menu::init();
@@ -445,6 +478,9 @@ int main(int argc, char* argv[]) {
     bool presentStallReported = false, guestStallReported = false;
     try {
     while (!exiting) {
+#ifdef LM_VR_VISIONOS
+        lmvr_visionos_frame_boundary();  // drains this thread's autorelease pool (Metal objects)
+#endif
         port::heartbeat();
         sStallOpen.store(false, std::memory_order_relaxed);
         if (!paused) port::setPhase("game loop: window events (aurora_update)");  // (paused: nullptr, a wait on purpose)
@@ -468,6 +504,31 @@ int main(int argc, char* argv[]) {
                 audio::outSetPaused(false);
             }
         }
+#ifdef LM_VR_VISIONOS
+        // Apple Vision Pro: hold the game while nobody sees it, as for a window that lost focus:
+        // the Digital Crown closed the space (the session stops and waits for a new layer), the
+        // headset is off or visionOS covers the game (unfocused), or the launcher paused it. The
+        // launcher's Quit ends the game through its own exit path.
+        {
+            static bool sHeld = false, sMuted = false;
+            const bool held = vrhost::sessionHeld() || lmvr_visionos_game_held();
+            if (held != sHeld) {
+                sHeld = held;
+                paused = held;
+                port::setPhase(held ? nullptr : "game loop");
+                log("[visionos] game %s", held ? "held" : "resumed");
+            }
+            // An audio interruption (Siri, a call, an alarm) pauses only the sound: the game keeps
+            // sending frames, or the compositor would end it after 10 s.
+            const bool muted = held || lmvr_visionos_audio_interrupted();
+            if (muted != sMuted) {
+                sMuted = muted;
+                audio::outSetPaused(muted);
+            }
+            if (held) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            if (lmvr_visionos_quit_requested()) exiting = true;
+        }
+#endif
         // Shaders first (precache.h holdGame): at startup the game does not start, and after a
         // settings change that needs other shader variants it waits, until they are compiled.
         const bool hold = !exiting && precache::holdGame();
@@ -514,7 +575,20 @@ int main(int argc, char* argv[]) {
         if (exiting || paused) continue;
         if (hold) {
             port::setPhase("game loop: shader preparation frame");
+#ifdef LM_VR_VISIONOS
+            // Apple Vision Pro: the headset sees the progress too, on the menu panel. Its
+            // compositor ends an app that sends no frames for 10 s, and the first start compiles
+            // shaders for longer than that. (On your table the volume's own note shows meanwhile:
+            // the hold's picture is drawn outside the game's frame.)
+            vrhost::beginFrame();
+            volume::hostBeginFrame();
+            if (!aurora_begin_frame()) {
+                vrhost::endFrame(false);
+                continue;
+            }
+#else
             if (!aurora_begin_frame()) continue;
+#endif
             lastPresented = SteadyClock::now();
             presentStallReported = false;
             checkpoints::pollGamepads();
@@ -522,15 +596,28 @@ int main(int argc, char* argv[]) {
             precache::drawHold();
             precache::frame();
             aurora_end_frame();
+#ifdef LM_VR_VISIONOS
+            {
+                // One picture for both eyes: only while the presentation is the flat menu panel
+                // (startup); a hold in the tracked world (a settings change) submits nothing.
+                const bool panel = vrhost::rendering() && vrhost::panelMode();
+                if (panel) vrhost::copyEye(0);
+                vrhost::endFrame(panel);  // xrWaitFrame paces this loop
+            }
+            // On your table: no xrWaitFrame; leave the CPU to the compile threads.
+            if (volume::enabled()) std::this_thread::sleep_for(std::chrono::milliseconds(8));
+#else
             // Leave the CPU to the compile threads (no VSync pacing without a game frame).
             std::this_thread::sleep_for(std::chrono::milliseconds(8));
+#endif
             if (menu::quitRequested()) break;
             continue;
         }
         // (Phases name the step in a hang report: issue #11.)
         port::setPhase("game loop: frame pacing wait");
         vrhost::beginFrame();
-        if(!vrhost::enabled()) pacing::beforeFrame();
+        if (volume::enabled()) volume::hostBeginFrame();  // On your table: the volume's window paces it
+        else if(!vrhost::enabled()) pacing::beforeFrame();
         interp::hostMark(0);
         port::setPhase("game loop: aurora_begin_frame (frame slot, staging buffer)");
         if (!aurora_begin_frame()) {vrhost::endFrame(false);continue;}
@@ -542,12 +629,14 @@ int main(int argc, char* argv[]) {
         ws::beginFrame();
         port::setPhase(frame::interpolating() ? "game loop: replaying a game frame" : "game loop: running the game (lockstep)");
         const bool running = frame::hostFrame();
+        volume::hostFrameDone();  // On your table: the finished frame to the volume's panel
         pacing::afterReplay();
         interp::hostMark(2);
         vrhost::drawBelt();
         port::setPhase("game loop: F1 menu / overlays");
         menu::draw();
         precache::frame();
+        volume::beforeEndFrame(menu::isOpen());  // On your table: the settings overlay to the panel
         port::setPhase("game loop: present hold");
         pacing::beforeEnd();
         port::setPhase("game loop: aurora_end_frame (GX FIFO drain, hand-off to the render worker)");
@@ -580,7 +669,19 @@ int main(int argc, char* argv[]) {
     }
     } catch (const std::exception& error) {
         std::fprintf(stderr, "[vr] Rendering stopped: %s\n", error.what());
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Rendering stopped", error.what(), aurora_get_window());
+        if (!std::getenv("LM_BACKGROUND"))
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Rendering stopped", error.what(), aurora_get_window());
+#ifdef LM_VR_VISIONOS
+        // Apple Vision Pro: the launcher reports a failed run (exit code 3) instead of the app
+        // vanishing, and the next start's recovery sees it wasn't a clean exit.
+        menu::shutdown();
+        vi::stopTimer();
+        frame::stop();
+        audio::outShutdown();
+        vrhost::shutdown();
+        aurora_shutdown();
+        return 3;
+#endif
     }
 
     port::setPhase("shutdown (releasing graphics objects, writing caches)");

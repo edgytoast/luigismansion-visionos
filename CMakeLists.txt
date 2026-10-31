@@ -367,3 +367,9 @@ if (EXISTS ${LM_DOL})
 else ()
     message(STATUS "LM_DOL not found (${LM_DOL}); skipping the lmrecomp developer build")
 endif ()
+
+# Apple Vision Pro (luigismansion-visionos): the port's game framework is defined outside this
+# tree, in the port's own CMake file, and sees every target and source list above.
+if (LM_VISIONOS_CMAKE)
+    include("${LM_VISIONOS_CMAKE}")
+endif ()

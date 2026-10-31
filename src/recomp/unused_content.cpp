@@ -10,6 +10,9 @@
 #include "recomp/runtime.h"
 #include "recomp/version.h"
 #include "recomp/vr_host.h"
+#include "recomp/volume.h"
+
+#include <aurora/mirror.h>
 
 #include <dolphin/pad.h>
 
@@ -148,6 +151,8 @@ HLE(fn_80060E70) {
         explicit CharScope(bool on) { enh::setCharacterPass(on); }
         ~CharScope() { enh::setCharacterPass(prev); }
     } charScope(pass != 0x30);
+    // Apple Vision Pro, On your table: the scene mirror adds the ghosts over the scene as this layer is.
+    volume::MirrorScope ghostLayer(aurora::mirror::MarkGhostPass, pass == 0x30);
     if (!sForce) return  // dev-only experiment (LM_EARLY_GHOSTS=1); the menu option is the beta lighting below
         callOriginal(c, "fn_80060E70");
     if (pass == 0x10) {

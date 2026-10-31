@@ -393,3 +393,7 @@ fn_8005724C us pal
 
 # PAL Boo counter: scoped VR well-scene HUD visibility.
 palfn_80052C00 pal
+
+# The map's models before the first DVD thread's finished loads (src/recomp/load_order.cpp).
+fn_801713CC
+closeFile__9LMDvdFileFPvP13LMDvdFileInfo
