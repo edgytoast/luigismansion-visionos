@@ -1,0 +1,153 @@
+# Luigi's Mansion VR for Apple Vision Pro: the SwiftUI app around the game.
+#
+# Generated into an Xcode project by the build script (xcodegen generate), which
+# exports:
+#   LMVR_TEAM            Apple developer team ID (signing)
+#   LMVR_BUNDLE_ID       bundle identifier: keep a team suffix (dev.lmvr.vision.<TEAM>).
+#                           A bare ID may belong to another team; signing then falls
+#                           back to a wildcard profile that can't carry the memory
+#                           entitlement, and the build fails.
+#   LMVR_GAME_BUILD_DIR  the directory holding LuigisMansionVisionGame.framework (framework mode)
+#
+# xcodegen owns Info.plist and the entitlements file: edit them HERE (info.properties,
+# entitlements.properties), never the generated files.
+name: LuigisMansionVision
+options:
+  # visionOS 26: TrevorbiltKit, Progressive's render context, Sense controllers and the drawable
+  # arrays need it.
+  deploymentTarget:
+    visionOS: "26.0"
+  createIntermediateGroups: true
+
+# The launcher every Trevorbilt port shares, vendored (scripts/sync-trevorbilt-kit.sh) so everything
+# the app runs is in this repository.
+packages:
+  TrevorbiltKit:
+    path: ../TrevorbiltKit
+settings:
+  base:
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    SWIFT_VERSION: "5"
+    DEVELOPMENT_TEAM: ${LMVR_TEAM}
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  LuigisMansionVision:
+    type: application
+    platform: visionOS
+    sources:
+      - path: Sources
+      - path: Assets.xcassets
+      # The game window's materials: WindowFrame.usda (the HUD), MirrorMaterials*.usda (the scene
+      # mirror's, written by scripts/gen-mirror-materials.py).
+      - path: Resources
+        buildPhase: resources
+      # The base tree's shipped shader/pipeline precache list (data/pipelines.bin, copied next to
+      # the framework by build-visionos.sh; not game data). Resources go through Copy Bundle
+      # Resources: a post-build copy lands after the code seal and breaks the signature.
+      - path: ${LMVR_GAME_BUILD_DIR}/pipelines.bin
+        buildPhase: resources
+    # Which commit the app was built from, for its About and Ports tabs: TBBuildCommit (the full
+    # commit, "unknown" without git) and TBBuildDirty, a development build: uncommitted changes, a
+    # checkout of anything but the public repository, or a commit not pushed, since only the public
+    # repository's commits can be compared with what the AVP Ports Index reviewed.
+    postBuildScripts:
+      - name: Build commit
+        basedOnDependencyAnalysis: false
+        # After Xcode writes the app's Info.plist, not before (which would lose these keys).
+        inputFiles:
+          - $(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)
+        script: |
+          plist="$TARGET_BUILD_DIR/$INFOPLIST_PATH"
+          release_repo="$(printf '%s' 'edgytoast/luigismansion-visionos' | tr '[:upper:]' '[:lower:]')"
+          commit=unknown
+          dirty=false
+          if commit_found=$(git -C "$SRCROOT" rev-parse HEAD 2>/dev/null); then
+            commit=$commit_found
+            [ -z "$(git -C "$SRCROOT/../.." status --porcelain --ignore-submodules=dirty 2>/dev/null)" ] || dirty=true
+            git -C "$SRCROOT" remote -v 2>/dev/null | tr '[:upper:]' '[:lower:]' |
+              grep -qF -e "/$release_repo.git " -e "/$release_repo " -e ":$release_repo.git " -e ":$release_repo " || dirty=true
+            git -C "$SRCROOT" branch -r --contains HEAD 2>/dev/null | grep -q . || dirty=true
+          fi
+          /usr/libexec/PlistBuddy -c "Delete :TBBuildCommit" "$plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Delete :TBBuildDirty" "$plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :TBBuildCommit string $commit" -c "Add :TBBuildDirty string $dirty" "$plist"
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Luigi's Mansion VR
+        # xcodegen otherwise writes its own 1.0 and 1, whatever MARKETING_VERSION says.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.games
+        LSRequiresIPhoneOS: true
+        GCSupportsControllerUserInteraction: true
+        # PS VR2 Sense controllers (SpatialGamepad); any Bluetooth gamepad (ExtendedGamepad).
+        GCSupportedGameControllers:
+          - ProfileName: SpatialGamepad
+          - ProfileName: ExtendedGamepad
+        NSAccessoryTrackingUsageDescription: "Tracks your PlayStation VR2 Sense controllers so you can aim and point at the game's settings."
+        NSHandsTrackingUsageDescription: "Lets your hands play when no controller is in them."
+        NSWorldSensingUsageDescription: "Keeps the mansion's diorama steady in front of you as you move."
+        # The user's game files: AirDrop "Open with", Files › On My Apple Vision Pro, the importer.
+        LSSupportsOpeningDocumentsInPlace: true
+        UIFileSharingEnabled: true
+        UIApplicationSupportsIndirectInputEvents: true
+        UIRequiredDeviceCapabilities: [arm64, metal]
+        UIApplicationSceneManifest:
+          UIApplicationPreferredDefaultSceneSessionRole: UIWindowSceneSessionRoleApplication
+          UIApplicationSupportsMultipleScenes: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Game file
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.data]
+    entitlements:
+      path: LuigisMansionVision.entitlements
+      properties:
+        # visionOS ends an app at a fixed footprint; games plus eye targets pass it.
+        com.apple.developer.kernel.increased-memory-limit: true
+        # Add only if the game reserves big fixed address ranges (recompilers, emulators):
+        # com.apple.developer.kernel.extended-virtual-addressing: true
+    dependencies:
+      - package: TrevorbiltKit
+      - sdk: ARKit.framework
+      - sdk: CompositorServices.framework
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: GameController.framework
+      - framework: ${LMVR_GAME_BUILD_DIR}/LuigisMansionVisionGame.framework
+        embed: true
+        codeSign: true
+    settings:
+      base:
+        PRODUCT_NAME: LuigisMansionVision
+        PRODUCT_BUNDLE_IDENTIFIER: ${LMVR_BUNDLE_ID}
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/LuigisMansionVision-Bridging-Header.h
+        CLANG_ENABLE_OBJC_ARC: YES
+        CLANG_CXX_LANGUAGE_STANDARD: c++20
+        HEADER_SEARCH_PATHS: '"$(SRCROOT)/../host"'
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+        GENERATE_INFOPLIST_FILE: NO
+        # The build-commit phase reads the repository's git state.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        # Engines are built arm64-only; Apple Silicon Macs are the prerequisite.
+        EXCLUDED_ARCHS[sdk=xrsimulator*]: x86_64
+        # Quoted: the build directory's path can hold a space, which split it in two.
+        FRAMEWORK_SEARCH_PATHS: '"${LMVR_GAME_BUILD_DIR}"'
+
+schemes:
+  LuigisMansionVision:
+    build:
+      targets:
+        LuigisMansionVision: all
+    run:
+      config: Debug
+      # Metal API validation and GPU frame capture (on in Xcode's default scheme)
+      # cost a lot of memory and CPU with a game's draw counts; the headset ends
+      # the app at its memory limit. Turn them on only to chase a Metal bug.
+      enableGPUFrameCaptureMode: disabled
+      enableGPUValidationMode: disabled
+    archive:
+      config: Release
