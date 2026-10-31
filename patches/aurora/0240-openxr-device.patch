@@ -1,0 +1,52 @@
+--- a/lib/webgpu/gpu.cpp
++++ b/lib/webgpu/gpu.cpp
+@@ -31,6 +31,12 @@
+ #ifdef WEBGPU_DAWN
+ #include "../dawn/TracyPlatform.hpp"
+ #include <dawn/native/DawnNative.h>
++#ifdef _WIN32
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <dawn/native/D3DBackend.h>
++#endif
+ #endif
+ 
+ namespace aurora::gx {
+@@ -839,12 +842,21 @@
+     return false;
+   }
+   {
+-    const wgpu::RequestAdapterOptions options{
++    wgpu::RequestAdapterOptions options{
+         .featureLevel = wgpu::FeatureLevel::Compatibility,
+         .powerPreference = wgpu::PowerPreference::HighPerformance,
+         .backendType = backend,
+         .compatibleSurface = g_surface,
+     };
++#if defined(_WIN32) && defined(WEBGPU_DAWN)
++    dawn::native::d3d::RequestAdapterOptionsLUID xrLuid;
++    if (const char* value = std::getenv("LM_XR_ADAPTER_LUID"); value && backend == wgpu::BackendType::D3D12) {
++      const auto packed = std::strtoull(value, nullptr, 16);
++      xrLuid.adapterLUID.LowPart = static_cast<unsigned long>(packed);
++      xrLuid.adapterLUID.HighPart = static_cast<long>(packed >> 32);
++      options.nextInChain = &xrLuid;
++    }
++#endif
+     Log.info("Requesting adapter\n  Feature level: {}\n  Power preference: {}\n  Backend: {}\n  Compatible surface: {}",
+              magic_enum::enum_name(options.featureLevel), magic_enum::enum_name(options.powerPreference),
+              magic_enum::enum_name(options.backendType), static_cast<bool>(options.compatibleSurface));
+@@ -1002,6 +1014,13 @@
+       requiredFeatures.push_back(wgpu::FeatureName::ImplicitDeviceSynchronization);
+       Log.info("Implicit device synchronization on");
+     }
++    if (std::getenv("LM_XR_ADAPTER_LUID") && backend == wgpu::BackendType::D3D12) {
++      if (!g_adapter.HasFeature(wgpu::FeatureName::SharedTextureMemoryD3D12Resource)) {
++        Log.error("VR requires native D3D12 texture import");
++        return false;
++      }
++      requiredFeatures.push_back(wgpu::FeatureName::SharedTextureMemoryD3D12Resource);
++    }
+     std::string featureList;
+     for (auto featureName : requiredFeatures) {
+       featureList += "\n  ";

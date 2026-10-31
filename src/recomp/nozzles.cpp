@@ -15,8 +15,12 @@
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
+#include "recomp/vr_host.h"
+#include "recomp/vr_avatar_guest.h"
 
 #include <cstdlib>
+#include <bit>
+#include "recomp/skip.h"
 
 namespace recomp {
 namespace {
@@ -77,8 +81,27 @@ HLE(fn_800B36B8) {
         return;
     }
     const bool on = enabled();
+    const u32 oldMode=rd32(luigi+kMode),motion=rd32(luigi+0x7EC),controller=rd32(luigi+0x7E4);
+    std::array<u32,7> before{};
+    const bool motionValid=inMem1(motion+0x2DB)&&inMem1(controller+0x317);
+    if(motionValid)for(unsigned i=0;i<7;++i)before[i]=rd32(motion+0x2C0+4*i);
     callOriginal(c, "fn_800B36B8");
+    // Native mode changes request the body/arm transition through fn_8007D748
+    // and fn_8007D76C. Its short state-1 blend inhibits walking. Tracked VR
+    // hands already present the held nozzle, so retain the prior locomotion
+    // transition state while keeping the native mode/attack update intact.
+    static const bool blendTest=std::getenv("LM_VR_VACUUM_START_TEST")!=nullptr;
+    const bool vrMode=vrhost::firstPerson()||(blendTest&&vravatar::diagnosticEnabled());
+    if(motionValid&&!skip::cinematicCamera()&&vr::bypassVacuumStartBlend(vrMode,oldMode,rd32(luigi+kMode),rd32(controller+0x310),before[0],rd32(motion+0x2C0))) {
+        for(unsigned i=0;i<7;++i)wr32(motion+0x2C0+4*i,before[i]);
+        static unsigned reports=0;if(reports++<8)log("[vr vacuum locomotion] native suction starts without the body-only transition pause");
+    }
 
+    static const bool trace=std::getenv("LM_VR_VACUUM_START_TRACE")!=nullptr;
+    if(trace&&inMem1(luigi+0x1183)) {
+        const u32 ctrl=rd32(luigi+0x7E4),motion=rd32(luigi+0x7EC);
+        if(inMem1(ctrl+0x317)&&inMem1(motion+0x2C3))log("[vr vacuum start] f%u pos %.3f %.3f %.3f ctrl %u/%u motion %u mode %u timer %.2f/%.2f",skip::guestFrames(),std::bit_cast<float>(rd32(luigi+0x44)),std::bit_cast<float>(rd32(luigi+0x48)),std::bit_cast<float>(rd32(luigi+0x4C)),rd32(ctrl+0x310),rd32(ctrl+0x314),rd32(motion+0x2C0),rd32(luigi+kMode),std::bit_cast<float>(rd32(luigi+0x1114)),std::bit_cast<float>(rd32(luigi+0x110C)));
+    }
     const u32 mode = rd32(luigi + kMode);
     const u32 type = rd32(nozzle + kCharType);
     u32 want = type;
@@ -88,6 +111,17 @@ HLE(fn_800B36B8) {
     if (waterReady && mode == kModeWater) want = kTypeWater;
     else if (airReady && mode == kModeAir) want = kTypeAir;
     else if (type == kTypeWater || type == kTypeAir) want = mode == kModeLight ? kTypeLight : kTypeHose;  // back to retail
+    // Render the held nozzle even before its trigger starts suction. Native mode
+    // logic still decides attacks/elements; this changes only the model type.
+    const char* toolTest=std::getenv("LM_VR_TOOL_TEST");
+    const bool diagnosticTools=vravatar::diagnosticEnabled()&&toolTest&&toolTest[0]=='1';
+    if((vrhost::beltMode()||diagnosticTools)&&vravatar::captureAnchor().actorId==luigi) {
+        unsigned hand=0;float trigger=0;
+        const bool vacuum=diagnosticTools||vrhost::heldEquipmentControl(hand,trigger,vr::GrabKind::Poltergust);
+        want=vacuum?kTypeHose:kTypeLight;
+        if((rd16(luigi+0x792)&4)&&!vravatar::toolModelReady(vr::GrabKind::Poltergust))want=kTypeHose;
+        else if(!vravatar::toolModelReady(vr::GrabKind::Flashlight))want=kTypeLight;
+    }
     if (want != type) {
         static const u32 sRetype = guestSymbol("fn_800B9064");
         const Ctx saved = c;

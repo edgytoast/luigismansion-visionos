@@ -51,6 +51,9 @@ constexpr int kRingSize = 64;
 thread_local u32 tRing[kRingSize];
 thread_local u32 tRingLr[kRingSize];
 thread_local unsigned tRingPos = 0;
+struct HeapRequest {u32 heap,size,align,free,start,end,lr;};
+thread_local HeapRequest tHeapRequests[16]{};
+thread_local unsigned tHeapPos=0;
 }  // namespace
 
 void initTrace() {
@@ -73,6 +76,11 @@ void initTrace() {
 }
 
 void trace_enter(u32 addr, Ctx& c) {
+    static const u32 solidAlloc=guestSymbol("alloc__12JKRSolidHeapFUli");
+    if(addr==solidAlloc && c.r[3]>=0x80000000u && c.r[3]<=0x817FFF88u && !(c.r[3]&3)) {
+        const u32 h=c.r[3];
+        tHeapRequests[tHeapPos++&15]={h,c.r[4],c.r[5],rd32(h+0x68),rd32(h+0x6c),rd32(h+0x70),c.lr};
+    }
     c.lastFn = addr;
     c.ring[c.ringPos++ & 31] = addr;
     tRing[tRingPos % kRingSize] = addr;
@@ -160,6 +168,9 @@ void watchRange(u32 a, u32 len, const char* what) {
 
 void dumpTraceRing() {
     if (!g_traceOn) return;
+    std::fprintf(stderr, "recent solid heap requests (before native allocation):\n");
+    const unsigned heapN=std::min(tHeapPos,16u);
+    for(unsigned i=tHeapPos-heapN;i<tHeapPos;++i){const auto& h=tHeapRequests[i&15];std::fprintf(stderr,"  heap=%08X size=%X align=%d free=%X head=%08X tail=%08X lr=%08X\n",h.heap,h.size,s32(h.align),h.free,h.start,h.end,h.lr);}
     std::fprintf(stderr, "last guest calls on this thread (oldest first):\n");
     const unsigned n = tRingPos < kRingSize ? tRingPos : kRingSize;
     for (unsigned i = tRingPos - n; i < tRingPos; i++)
@@ -268,6 +279,14 @@ void Ctx::call(u32 addr) {
 }
 
 void callMissing(Ctx& c, u32 addr) {
+    // Fatal-path diagnostics only: bounded reads of game RAM, never host pointers.
+    log("[dispatch failure] target=%08X lr=%08X ctr=%08X last=%08X",addr,c.lr,c.ctr,c.lastFn);
+    for(unsigned i=0;i<32;i+=4)log("[dispatch registers] r%02u=%08X r%02u=%08X r%02u=%08X r%02u=%08X",i,c.r[i],i+1,c.r[i+1],i+2,c.r[i+2],i+3,c.r[i+3]);
+    for(unsigned reg:{1u,3u,29u,30u,31u}) {
+        const u32 p=c.r[reg];if(p<0x80000000u||p>0x817FFFC0u||(p&3))continue;
+        for(unsigned offset=0;offset<64;offset+=16)log("[dispatch RAM r%u] %08X: %08X %08X %08X %08X",reg,p+offset,rd32(p+offset),rd32(p+offset+4),rd32(p+offset+8),rd32(p+offset+12));
+    }
+
     if (addr == 0) {
         // Usually a virtual call: show the object and its vtable.
         const u32 obj = c.r[3];
@@ -363,14 +382,7 @@ void hleMissing(const char* name, u32 addr, Ctx& c) {
 }
 
 namespace {
-// Guest objects the host makes (boot thread, interrupt stack, card/DVD scratch, unused-content
-// data) live in the host window above MEM1 (ctx.h kHostMemSize), so the whole of MEM1 below the
-// FST is the game's arena as on the console (hle_os.cpp OSInit). The model viewer keeps
-// 0x81810000-0x81812000 and early Luigi's model copies start at 0x81F00000. 1.5 MiB: the rest up to
-// 0x81F00000 is unused2's extraAlloc (both started at 0x81820000 from 1.1.1 to 1.1.3, so the Mario
-// model and other unused content were built over the boot thread, card/DVD scratch and FIFO object).
-constexpr u32 kHleHeapStart = 0x81820000, kHleHeapEnd = 0x819A0000;
-u32 sHleHeap = kHleHeapStart;
+u32 sHleHeap = kHleHeapBegin;
 std::mutex sHleHeapM;
 }  // namespace
 

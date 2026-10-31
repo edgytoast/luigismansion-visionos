@@ -18,7 +18,12 @@
 //     by a HUD element (picture-in-picture, see AnchorScope) follow its 2D instead.
 #include "recomp/ctx.h"
 
+namespace recomp { struct Ctx; }
 namespace recomp::ws {
+// Invoked by the sole model draw hook; must not register a second HLE handler.
+void beforeS3dOpaqueDraw(Ctx& context);
+// Guest-thread visibility for ordinary VR gameplay HUD, excluding call portraits.
+bool hideGameplayHud();
 
 void init();          // host thread, before the first frame: viewport policy from --aspect
 void beginFrame();    // host thread, before the guest runs a frame: picks up window resizes

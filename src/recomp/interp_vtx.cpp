@@ -17,6 +17,7 @@
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
 #include "recomp/interp.h"
+#include "recomp/vr_host.h"
 
 #include <dolphin/gx.h>
 
@@ -435,14 +436,16 @@ void vtxBegin(u32 prim, u32 fmt, u32 nVerts, bool perspective) {
             }
         }
         detail::vertsBegin();
-    } else if (!perspective && gx::vtxDesc(GX_VA_POS) == GX_DIRECT && gx::vtxDesc(GX_VA_CLR0) == GX_DIRECT &&
+    } else if (!perspective && gx::vtxDesc(GX_VA_POS) == GX_DIRECT && (gx::vtxDesc(GX_VA_CLR0) == GX_DIRECT || vrhost::enabled()) &&
                gx::vtxAttrSize(int(fmt), GX_VA_POS) > 0 && nVerts <= 64) {
         // A 2D quad with direct vertex colours (HUD fades, full-screen fade pictures): its colours
         // blend while its positions stay put (the HUD fading in with the room on arrival stepped at
         // 30 Hz, sweep C); a picture whose layout animates (a message window opening) blends its
         // positions too (replayPair). The texture it shows is part of what is drawn.
-        u8 cnt, type, frac;
-        if (gx::vtxAttrFormat(int(fmt), GX_VA_CLR0, cnt, type, frac) && (type == GX_RGB8 || type == GX_RGBX8 || type == GX_RGBA8)) {
+        u8 cnt=0, type=0, frac=0;
+        const bool directColor=gx::vtxDesc(GX_VA_CLR0)==GX_DIRECT && gx::vtxAttrFormat(int(fmt), GX_VA_CLR0, cnt, type, frac) && (type == GX_RGB8 || type == GX_RGBX8 || type == GX_RGBA8);
+        // Constant-color glyph/shadow draws still need positions for VR layout.
+        if (directColor || vrhost::enabled()) {
             u32 posOffset = 0, off = 0;
             for (int a = GX_VA_PNMTXIDX; a < GX_VA_POS; a++) posOffset += u32(std::max(0, gx::vtxAttrSize(int(fmt), a)));
             for (int a = GX_VA_PNMTXIDX; a < GX_VA_CLR0; a++) off += u32(std::max(0, gx::vtxAttrSize(int(fmt), a)));
@@ -450,7 +453,7 @@ void vtxBegin(u32 prim, u32 fmt, u32 nVerts, bool perspective) {
             const u64 texId = tex0 ? u64(boundTexture(0)) << 8 : 0;
             sDirect = {true, ~0u, 0, nVerts, vertexSize(int(fmt)), posOffset, detail::mix(id ^ nVerts ^ 0x2D00ull ^ texId)};
             sDirect.clrOffset = off;
-            sDirect.clrBytes = type == GX_RGBA8 ? 4 : 3;
+            sDirect.clrBytes = directColor ? (type == GX_RGBA8 ? 4 : 3) : 0;
             sDirect.posBytes2D = u32(gx::vtxAttrSize(int(fmt), GX_VA_POS));
             u8 pc, pt, pf;
             if (gx::vtxAttrFormat(int(fmt), GX_VA_POS, pc, pt, pf) && pt <= GX_F32) sDirect.posFmt2D = 0x100u | pt | u32(pf & 31) << 3;

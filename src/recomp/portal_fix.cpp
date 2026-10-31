@@ -19,6 +19,7 @@
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
 #include "recomp/version.h"
+#include "recomp/vr_host.h"
 #include "recomp/widescreen.h"
 
 #include <algorithm>
@@ -81,6 +82,21 @@ HLE(fn_8001333C) {
     const u32 portal = c.r[3], out = c.r[4], parent = c.r[5];
     HorPlusScope horPlus(VA(0x803A3C98) + 0x258);
     callOriginal(c, "fn_8001333C");
+    if(vrhost::conservativeVisibility() && gu::inMem1(portal+4) && gu::inMem1(out+7) && gu::inMem1(parent+7)) {
+        // Capture connected open rooms without clipping them to a rectangle made
+        // for the flat camera. Geometry/depth still occludes them in each VR eye.
+        // Keep the original closed-portal check and surrounding room/load traversal.
+        const bool closed=s8(gu::call(c,GU_SYM("fn_8001B278"),{rd32(portal+4)}))!=0;
+        if(!closed) {
+            s16 rect[4];for(int i=0;i<4;++i) rect[i]=rdS16(parent+2*i);
+            if(rect[0]<rect[2] && rect[1]<rect[3]) {
+                wrRect(out,rect);
+                static unsigned reports=0;
+                if(reports++<4) log("[vr portal] open passage uses parent rectangle %d %d %d %d",rect[0],rect[1],rect[2],rect[3]);
+                return;
+            }
+        }
+    }
     nearPlaneFix(c, portal, out, parent);
 }
 

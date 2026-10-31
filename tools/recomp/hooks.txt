@@ -198,8 +198,8 @@ fn_800B172C us pal
 fn_8003BEEC us pal
 fn_8003EBB0
 # Leftover room visits (room_swap.cpp): Luigi's start position for the visited room.
-findLuigiAppearIndex__Q24Koga9EnManagerFPQ24Koga8ToolDataUl
-getValue__Q24Koga8ToolDataCFiPCcPf
+findLuigiAppearIndex__Q24Koga9EnManagerFPQ24Koga8ToolDataUl us pal
+getValue__Q24Koga8ToolDataCFiPCcPf us pal
 
 # Runtime-switchable instruction patches: "patch <id> <address> <instruction word> [us] [pal]".
 # The replacement runs while switch <id> is on (setPatch, src/recomp/runtime.h). The address is
@@ -269,7 +269,7 @@ fn_80020654 us pal
 # player 2) while player 2's Poltergust points at it and player 1's does not; fn_800C60B0 (an object
 # being pulled in) then follows player 2's nozzle.
 fn_80143174
-fn_80145534
+fn_80145534 us pal
 fn_800C60B0
 fn_800AC164
 fn_8001CEAC
@@ -317,7 +317,6 @@ fn_8000E050 us pal
 # Frame interpolation identity tags (src/recomp/tags.cpp, docs/INTERPOLATION.md "Tagged
 # interpolation"): the game's draw entry points open a tag scope around what they draw.
 fn_8006033C us pal
-fn_80059C54 us pal
 fn_80059F6C us pal
 fn_8005A280 us pal
 fn_800597C0 us pal
@@ -350,6 +349,22 @@ fn_800F3120 us pal
 fn_80015BDC us pal
 draw__7J2DPaneFiiPC14J2DGrafContextb us pal
 free__10JKRExpHeapFPv us pal
+
+fn_80021DDC us pal
+
+# VR held-nozzle position/direction getters (retail functions retained).
+fn_80077408 us pal
+fn_80077414 us pal
+
+# Bounded native doorway collision diagnostic (USA fixture only).
+fn_8005E7FC us pal
+
+# VR draw-only native hose pose adapter and narrow doorway collision query.
+fn_8008A504 us pal
+fn_800BD870 us pal
+
+# Preserve native ground constraint across validated open-door thresholds.
+fn_8005E9B0 us pal
 # Game heap allocations: failures logged loudly, LM_HEAP_LOG=1 logs all (src/recomp/tags.cpp).
 alloc__10JKRExpHeapFUli us pal
 # Silly options, world (src/recomp/silly_world.cpp, docs/ENHANCEMENTS.md "Silly options: world"):
@@ -361,3 +376,20 @@ fn_800CD1F4 us pal
 fn_801589A8 us pal
 fn_80151CC8 us pal
 fn_80059710 us pal
+
+# Room checkpoint spawn room overrides (unchanged unless a checkpoint is loading)
+getValue__Q24Koga8ToolDataCFiPCcPUl us pal
+getValue__Q24Koga8ToolDataCFiPCcPl us pal
+
+# Native gallery/area-clear screen presentation in VR
+fn_8018721C us pal
+
+# Processing machine visibility must apply before native camera/model matrices update
+fn_80060C88 us pal
+fn_80060D44 us pal
+
+# Suppress selected-treasure HUD notification in VR; money display remains
+fn_8005724C us pal
+
+# PAL Boo counter: scoped VR well-scene HUD visibility.
+palfn_80052C00 pal

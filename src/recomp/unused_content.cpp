@@ -1,12 +1,15 @@
 // Unused content still present in the retail code, re-enabled as F1 > Enhancements options.
 // Both are hooks (tools/recomp/hooks.txt) that run the original function and only steer which
 // of the game's own code paths it takes. Findings and addresses: docs/UNUSED_CONTENT.md.
+#include "recomp/processing_visibility.h"
 #include "recomp/enhanced_lighting.h"
+#include "recomp/vr_avatar_guest.h"
 #include "port/settings.h"
 #include "recomp/hle.h"
 #include "recomp/interp.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
+#include "recomp/vr_host.h"
 
 #include <dolphin/pad.h>
 
@@ -42,6 +45,14 @@ u16 sPrevButtons = 0;
 bool sGbhClockOn = envFlag("LM_GBH_CLOCK");  // test aid: start with the clock on
 
 }  // namespace
+
+// Keep the VR HUD on its ordinary money/bill/gold display. This call only
+// queues the selected-treasure notification after the pickup was credited.
+// Flat-screen play retains the original notification.
+HLE(fn_8005724C) {
+    if(vrhost::enabled())return;
+    callOriginal(c,"fn_8005724C");
+}
 
 // Game Boy Horror HUD update (once per game frame while the HUD is up).
 HLE(fn_8003CFC0) {
@@ -123,6 +134,8 @@ HLE(fn_8003CFC0) {
 // straight into the scene with their ghost lighting and alpha: the early, more solid look.
 // The ghost pass is also where enhanced lighting tags draws as ghosts (enhanced_lighting.h).
 HLE(fn_80060E70) {
+    processing::MachineDrawScope machineVisibility(c.r[3]);
+    vravatar::ReflectionScope reflection(c.r[3]);
     static const bool sForce = envFlag("LM_EARLY_GHOSTS");
     const u32 pass = c.r[3] & 0x30;
     struct GhostScope {

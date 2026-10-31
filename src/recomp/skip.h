@@ -22,6 +22,12 @@ namespace recomp::skip {
 // Guest side, once per presented guest frame. True: the frame is not handed to
 // the host; the guest continues straight into the next frame (fast-forward).
 bool onGuestFrame(Ctx& c);
+bool cinematicCamera(); // guest thread: script owns the camera; VR uses a panel
+bool dialogueCamera(bool textShown = false); // guest thread: ordinary prompt encountered in the current event
+bool choiceMenuActive(); // guest interpreter waits for a directional CHOICE
+bool pauseMenuView(bool roomDrawn); // Start-requested pause, distinct from scene handovers
+bool statusMenuView(); // native item/portrait-ghost inventory menu
+bool gameBoyView(); // guest thread: full Game Boy Horror frame/search interface is open
 // Guest side, inside PADRead: masks START while a cutscene can be skipped, and
 // drives controller 1 while skipping.
 void filterPad(PADStatus* pads, int count);

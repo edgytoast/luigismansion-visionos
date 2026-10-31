@@ -1,16 +1,56 @@
-# Luigi's Mansion Recompiled
+# Luigi's Mansion VR - complete source snapshot, build 150
 
-**No game data is included.** On first start the game asks for your own disc image (ISO, RVZ and or an extracted game folder) of the USA release (GLME01) and/or the European release (GLMP01). It is recommended to use both the USA and PAL versions of the game to experience every feature available in this port. Once the games are selected, it then builds the game for your PC with the bundled compiler, which takes about 20 to 60 seconds on a decent PC.
+This is the complete authored source behind the companion playable build, including
+Diorama, Life-size, experimental First person, F1 settings, HLE/recompiler/runtime,
+checkpoint implementation, tests, build scripts and patched Aurora engine.
+No retail game data, generated retail code, compiled game modules, personal saves,
+Git metadata/history, private work directories or local compiler binaries are included.
 
+Upstream: https://github.com/rob646464/luigis-mansion-recompiled
+Base: v1.1.4, commit 850a2b9a7613678f27d29d47e2bb11c74d2e0557.
+Aurora base: 50e5be30ec12cc72768bc564bc016b55e82be868, with this project's patches
+already applied in extern/aurora. All patch files are included for reference.
+See NOTICE.md, licenses, decomp/LICENSE, extern/aurora/LICENSE and
+extern/openxr-sdk/LICENSE. The decomp/JSystem sources are CC0 implementations;
+no code generated from a retail DOL is included. Retain third-party notices.
 
-## Features
-- **Any resolution, widescreen and ultrawide:** Hor+, with HUD elements anchored to the screen edges and widescreen fixes for full-screen scenes.
-- **High frame rates:** game logic stays at the original 30 updates per second, and the frames in between are interpolated from source-tagged objects. Frame rate goes up to 320 fps, with "Match display refresh rate" and VRR/G-SYNC aware pacing. "Original" keeps the console's 30 fps.
-- **Accurate GameCube rendering:** Better than Dolphin. EFB copies including copy-to-RAM, depth textures, real-time shadows, indirect effects, 6-bit blending and copy filters. A shader precache prepares everything before the game starts, so there are no compile stutters.
-- **Optional Enhanced lighting:** per-pixel and colored lights, soft shadows, a realistic flashlight beam, bloom and ghosts cast a glowing light.
-- **The European Hidden Mansion,** including its boss changes. With both discs, E. Gadd's lab offers the USA and the European Hidden Mansion.
-- **Restored unused content,** all off by default: Toggles to re-enable various cut content, a model viewer, warps to unused rooms and more.
-- **Options for EVERYTHING:** an F1 options menu for everything, difficulty settings, fun tweaks and toggles, rendering options, etc
+## Build on Windows
+Install Visual Studio 2022 C++ Build Tools with a Windows SDK, compatible complete
+LLVM (clang-cl, clang, lld-link and development headers; this build used LLVM 22),
+CMake 3.25+ (presets require a compatible recent CMake), Ninja, Git and Python 3.
+Put LLVM and Ninja on PATH. In PowerShell from this source folder:
 
-## Known issues
-- The 2-player mode (Unused content) is unfinished. The plan is to finish it soon, but for now it's mostly in the state it was left in in the original code.
+    powershell -ExecutionPolicy Bypass -File tools/build.ps1 -Preset windows-clang -Configure -Target LuigisMansionRecomp
+    cmake --build --preset windows-clang --target lmvr-camera-test lmvr-avatar-test lm-checkpoint-input-test
+    ctest --test-dir build/windows-clang --output-on-failure
+    cmake --install build/windows-clang --prefix out/runtime
+
+CMake downloads the declared external build dependencies (SDL, Dawn, nod, etc.).
+They are not game assets. This source ZIP is not an offline SDK/toolchain bundle.
+Bundled OpenXR headers are used directly; no header download is needed.
+No disc/DOL is needed to build the host application. First run asks the user to
+supply their own supported PAL game copy, then compiles its module locally.
+
+The root CMakeLists has only archive-specific adjustments: use vendored OpenXR
+headers, and accept the already patched Aurora snapshot instead of running git
+reset/patch commands. LMVR_PREPATCHED.txt verifies the patch set matches. The
+runtime/game/VR source files match the working source byte for byte.
+Do not initialize an Aurora submodule over the supplied patched engine tree.
+If uploading to GitHub, it is a regular vendored source directory, not a submodule.
+
+## Rebuild the native launcher
+packaging/windows/vr-launcher.cpp is the complete Windows launcher source.
+From a Visual Studio x64 developer prompt with clang-cl on PATH:
+
+    clang-cl /std:c++20 /EHsc /O2 /MT packaging/windows/vr-launcher.cpp /Fe:out/runtime/LMVR-Launcher.exe /link /SUBSYSTEM:WINDOWS shell32.lib advapi32.lib user32.lib
+
+Use the filename Luigi's Mansion VR.exe, place the installed runtime under bin,
+and keep its llvm compiler directory and runtime DLLs. See RELEASE-README.md for
+the shipped layout and user controls. The companion runtime ZIP already provides
+all these files. No first-person launcher is required; select modes through F1.
+
+## Development notes
+Current scene decisions: docs/DIORAMA_PRESENTATION_HISTORY.md.
+Older development-base/milestone notes are historical and may describe earlier
+limitations; this README and build-info.json identify the current snapshot.
+No source was committed or published by creating this archive.

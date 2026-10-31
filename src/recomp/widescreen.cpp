@@ -6,6 +6,9 @@
 #include "recomp/hle.h"
 #include "recomp/interp.h"
 #include "recomp/version.h"
+#include "recomp/vr_host.h"
+#include "recomp/vr_avatar_guest.h"
+#include "recomp/skip.h"
 #include "recomp/coop.h"
 #include "recomp/guest_util.h"
 
@@ -178,6 +181,28 @@ RenderToTextureScope::~RenderToTextureScope() { sRttDepth--; }
 // frame (as the call starts it rises into place by 1-3 units per game frame). (LM_TEXTBOX_LOCK=1:
 // shown at the game frame while a text box is up instead, the earlier behaviour.)
 HLE(fn_8003D634) {
+    if(vrhost::enabled() && !vravatar::ownsGameBoyHorror())return;
+    if(vrhost::enabled() && (vravatar::wellSceneHudHidden() || skip::statusMenuView()))return;
+    interp::HudElementScope element(vrhost::enabled()?2:0);
+    // Match the normal HUD's native scene-hide flag. The professor's call
+    // bezel is dialogue content and remains available when ordinary HUD hides.
+    const bool professorCall=rd32(VA(0x804D846C))==3;
+    // Giant Chauncey, Bogmire and Bowser/King Boo arenas: hide the small device HUD.
+    // Keep professor calls and the full-screen device available.
+    const u32 hudMap=rd32(VA(0x804D80C8));
+    if(vrhost::enabled() && !professorCall && (hudMap==10 || hudMap==13 || hudMap==9))return;
+    if(vrhost::enabled() && !professorCall && rd32(VA(0x804D8088)))return;
+    // The small money/radar HUD must not duplicate the full-screen device UI.
+    if(vrhost::enabled() && skip::gameBoyView() && rd32(VA(0x804D846C))!=3)return;
+    // First-person only: the native HUD remains intact in diorama/life-size.
+    // Training keeps the professor's GBH call mode set between prompts. Its
+    // dialogue is drawn separately; the bezel is unnecessary there, even mid-call.
+    if(vrhost::firstPerson()) {
+        const bool training=rd32(VA(0x804D80C8))==3;
+        const bool search=rd32(VA(0x804CFFF0))==2;
+        const bool call=rd32(VA(0x804D846C))==3 && (!training || tags::textBoxShown());
+        if(!search && !call) return;
+    }
     AnchorScope s(1);
     ShiftScope half(coop::gbhShift());  // 2-player split screen: in player 1's half
     const bool call = interp::capturing() && tags::textBoxShown();
@@ -196,6 +221,7 @@ HLE(fn_8003D634) {
 // The static noise drawn over the GBH screen (gbnoise01..03), from the HUD and from the
 // GBH view's own pass (fn_8003E7B0(1)).
 HLE(fn_8003BE9C) {
+    if(vrhost::enabled() && !vravatar::ownsGameBoyHorror())return;
     AnchorScope s(1);
     ShiftScope half(coop::gbhShift());
     // The noise as E. Gadd's call connects belongs to his call window (fn_8003D634 above).
@@ -246,6 +272,10 @@ HLE(fn_80114E18) {
     if (inCall) sCallAnchored = true;
     else if (sLastFrame == ~0u || (frame != sLastFrame && frame != sLastFrame + 1)) sCallAnchored = false;
     sLastFrame = frame;
+    // An explicit map opening must show its native button-press animation,
+    // even when the previous professor-call archive is still cached.
+    const bool mapOpening=!inCall && skip::gameBoyView();
+    if(mapOpening || vr::playerDemoNeedsPanel(sCallAnchored,vravatar::phoneEventCamera()))interp::notePlayerDemo();
     AnchorScope s(sCallAnchored ? 1 : 0);
     // A portrait shown with a message window (E. Gadd's on the GBH during his call) belongs to the
     // text box: its own 3D scene interpolates (SubView), while its viewport and scissor box follow
@@ -257,7 +287,9 @@ HLE(fn_80114E18) {
     interp::tagLogMark("portrait begin");
     if (lock) interp::pushFrameLock();
     if (join) interp::pushTextViewJoin(0x8003D634u);
+    const u32 drawBefore=interp::drawCount();
     callOriginal(c, "fn_80114E18");
+    if(interp::drawCount()!=drawBefore && !inCall && !sCallAnchored && vravatar::doorAnimationActive())interp::noteDoorAnimation();
     if (join) interp::popTextViewJoin();
     if (lock) interp::popFrameLock();
     interp::tagLogMark("portrait end");
@@ -323,6 +355,7 @@ bool inWipe() { return sWipeDepth > 0 && active(); }
 // extended to the display's edges (J2DPicture::drawTexCoord below), so the black surround covers
 // any width while the spotlight and the text stay where they are.
 HLE(fn_80050524) {
+    interp::noteResultsScreen(true);
     const bool wipe = rd8(c.r[3] + 1) == 0;
     // Frame interpolation: all of this 2D is shown at its game frame (as the text boxes, tags.cpp).
     // Blended separately, the wipe's circle and its four boxes did not meet in the in-between
@@ -347,7 +380,7 @@ HLE(fn_80050524) {
 // so he keeps blinking and opens his eyes again.
 // Test aids: LM_ACCT_BLINK=0 (frozen, as the game does), LM_ACCT_EYEFRAME=<f> (set the pattern
 // frame when the screens start, e.g. 63 for the closed lids).
-HLE(fn_80059C54) {
+void beforeS3dOpaqueDraw(Ctx& c) {
     if (c.lr == VA(0x8000F374)) {
         static const bool sBlink = [] { const char* e = std::getenv("LM_ACCT_BLINK"); return !(e && e[0] == '0'); }();
         static const char* const sStart = std::getenv("LM_ACCT_EYEFRAME");
@@ -363,7 +396,6 @@ HLE(fn_80059C54) {
             sFrame = frame;
         }
     }
-    callOriginal(c, "fn_80059C54");
 }
 
 // J2DScreen::draw(screen, x, y, graf): marks the area-clear mask screen (above), and anchors
@@ -452,11 +484,24 @@ HLE(J2DFillBox__FiiiiQ28JUtility6TColor) {
     callOriginal(c, "J2DFillBox__FiiiiQ28JUtility6TColor");
 }
 
+bool hideGameplayHud() {
+    return vrhost::enabled() && (vravatar::wellSceneHudHidden() || skip::statusMenuView() ||
+        rd32(VA(0x804D8088))!=0 || skip::gameBoyView());
+}
+
 // Health meter (bottom left). In the training room it shows over Luigi instead
 // (fn_80041214, a projected position): that call opens a centered scope.
 HLE(fn_800417F8) {
+    if(hideGameplayHud())return;
+    interp::HudElementScope element(vrhost::enabled()?1:0);
     AnchorScope s(-1);
     callOriginal(c, "fn_800417F8");
+}
+
+// PAL Boo counter has its own renderer, separate from the health meter.
+HLE(palfn_80052C00) {
+    if(hideGameplayHud())return;
+    callOriginal(c, "palfn_80052C00");
 }
 
 }  // namespace recomp::ws

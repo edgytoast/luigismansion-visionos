@@ -30,6 +30,8 @@
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
 #include "recomp/widescreen.h"
+#include "recomp/vr_host.h"
+#include "recomp/test_checkpoints.h"
 #ifndef LM_STATIC_MODULE
 #include "setup/setup.h"
 #endif
@@ -42,6 +44,7 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#include <exception>
 
 namespace recomp {
 u32 copyDispCount();  // hle_gx.cpp
@@ -211,6 +214,21 @@ int main(int argc, char* argv[]) {
     config.appName = "Luigi's Mansion Recompiled";
     config.logCallback = &logCallback;
     port::loadSettings();
+    try {
+        if (vrhost::prepare()) {
+            config.appName = "Luigi's Mansion VR";
+            port::settings().video.vsync = false;
+            if(port::settings().video.resolutionScale==0) port::settings().video.resolutionScale=3;
+            port::settings().enhancements.pauseOnFocusLoss = false;
+            port::settings().enhancedLighting.enabled = false;
+            port::settings().rendering.textureCopyFilter = false;
+            port::settings().rendering.displayCopyFilter = false;
+        }
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "[vr] %s\n", error.what());
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "VR startup failed", error.what(), nullptr);
+        return 1;
+    }
     // Start-up recovery (docs/SETUP.md "When the game does not start"): after a start that failed,
     // offers to reset the settings, rebuild the game data or put the saves aside.
 #ifdef LM_STATIC_MODULE
@@ -254,6 +272,7 @@ int main(int argc, char* argv[]) {
     // LM_ALLOW_CPU_GPU=1: accept a software renderer (e.g. Mesa llvmpipe for Vulkan in WSL or a
     // VM without GPU passthrough; docs/LINUX.md). Slow, for testing only.
     if (const char* c = std::getenv("LM_ALLOW_CPU_GPU"); c && *c == '1') config.allowCpuAdapter = true;
+    if (vrhost::enabled()) config.desiredBackend = BACKEND_D3D12;
     // LM_CACHE_DIR: separate shader/pipeline cache, e.g. for test runs of different builds side by side.
     // Default: next to settings.ini, so a scratch APPDATA (test runs) also gets its own cache
     // (Aurora's default, SDL_GetPrefPath, ignores the APPDATA variable).
@@ -355,6 +374,12 @@ int main(int argc, char* argv[]) {
     s32 dolSize = 0;
     const u8* dol = DVDGetDOLLocation(&dolSize);
 
+    try { vrhost::attach(); }
+    catch (const std::exception& error) {
+        std::fprintf(stderr, "[vr] %s\n", error.what());
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "VR graphics setup failed", error.what(), aurora_get_window());
+        vrhost::shutdown(); aurora_shutdown(); return 1;
+    }
     menu::init();
     g_mem = static_cast<u8*>(std::calloc(1, kHostMemSize));
     loadDol(dol);
@@ -418,6 +443,7 @@ int main(int argc, char* argv[]) {
     auto lastIteration = SteadyClock::now();
     u32 lastGuestFrames = frame::guestFrames();
     bool presentStallReported = false, guestStallReported = false;
+    try {
     while (!exiting) {
         port::heartbeat();
         sStallOpen.store(false, std::memory_order_relaxed);
@@ -426,6 +452,11 @@ int main(int argc, char* argv[]) {
             break;
         for (const AuroraEvent* ev = aurora_update(); ev && ev->type != AURORA_NONE; ++ev) {
             if (ev->type == AURORA_SDL_EVENT) menu::handleEvent(ev->sdl);
+            if (ev->type == AURORA_SDL_EVENT && ev->sdl.type == SDL_EVENT_KEY_DOWN && ev->sdl.key.key == SDLK_F6 && !ev->sdl.key.repeat)
+                vrhost::recenter();
+            if (ev->type == AURORA_SDL_EVENT && ev->sdl.type == SDL_EVENT_GAMEPAD_BUTTON_UP &&
+                ev->sdl.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK && vrhost::enabled() && vrhost::diorama() && !menu::isOpen())
+                vrhost::recenter();
             if (ev->type == AURORA_EXIT) exiting = true;
             else if (ev->type == AURORA_PAUSED) {
                 paused = true;
@@ -486,7 +517,8 @@ int main(int argc, char* argv[]) {
             if (!aurora_begin_frame()) continue;
             lastPresented = SteadyClock::now();
             presentStallReported = false;
-            menu::draw();  // applies settings changes (they may change what is being compiled)
+            checkpoints::pollGamepads();
+        menu::draw();  // applies settings changes (they may change what is being compiled)
             precache::drawHold();
             precache::frame();
             aurora_end_frame();
@@ -497,10 +529,11 @@ int main(int argc, char* argv[]) {
         }
         // (Phases name the step in a hang report: issue #11.)
         port::setPhase("game loop: frame pacing wait");
-        pacing::beforeFrame();
+        vrhost::beginFrame();
+        if(!vrhost::enabled()) pacing::beforeFrame();
         interp::hostMark(0);
         port::setPhase("game loop: aurora_begin_frame (frame slot, staging buffer)");
-        if (!aurora_begin_frame()) continue;
+        if (!aurora_begin_frame()) {vrhost::endFrame(false);continue;}
         lastPresented = SteadyClock::now();
         if (presentStallReported) log("[hang] frames are presented again");
         presentStallReported = false;
@@ -511,6 +544,7 @@ int main(int argc, char* argv[]) {
         const bool running = frame::hostFrame();
         pacing::afterReplay();
         interp::hostMark(2);
+        vrhost::drawBelt();
         port::setPhase("game loop: F1 menu / overlays");
         menu::draw();
         precache::frame();
@@ -518,6 +552,25 @@ int main(int argc, char* argv[]) {
         pacing::beforeEnd();
         port::setPhase("game loop: aurora_end_frame (GX FIFO drain, hand-off to the render worker)");
         aurora_end_frame();
+        bool stereoSubmitted = false;
+        if (vrhost::rendering() && frame::interpolating()) {
+            vrhost::copyEye(0);
+            if (vrhost::panelMode()) {
+                stereoSubmitted = true; // one texture, composited by OpenXR for both eyes
+            } else {
+                vrhost::selectEye(1);
+                if (aurora_begin_frame()) {
+                    const bool replayed = interp::replayStereoEye();
+                    vrhost::drawBelt();
+                    menu::draw();
+                    // Keep the desktop on the left eye; the right eye still
+                    // finishes GPU work and is copied into its OpenXR swapchain.
+                    aurora_end_frame_offscreen();
+                    if (replayed) { vrhost::copyEye(1); stereoSubmitted = true; }
+                }
+            }
+        }
+        vrhost::endFrame(stereoSubmitted);
         port::setPhase("game loop");
         pacing::afterFrame();
         interp::hostMark(3);
@@ -525,12 +578,17 @@ int main(int argc, char* argv[]) {
         interp::hostMark(4);
         if (!running || menu::quitRequested()) break;
     }
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "[vr] Rendering stopped: %s\n", error.what());
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Rendering stopped", error.what(), aurora_get_window());
+    }
 
     port::setPhase("shutdown (releasing graphics objects, writing caches)");
     menu::shutdown();
     vi::stopTimer();
     frame::stop();
     audio::outShutdown();
+    vrhost::shutdown();
     aurora_shutdown();
     port::recovery::onExit();
     std::_Exit(0);

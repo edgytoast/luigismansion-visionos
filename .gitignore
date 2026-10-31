@@ -21,5 +21,27 @@ CMakeUserPresets.json
 # Super Mario Sunshine game data (separate port, never commit)
 /Mario Sunshine/
 
+# Local development toolchain and Python caches
+/.tools/
 __pycache__/
 *.pyc
+
+# Frozen local executable and isolated player data
+/base-game/
+/profiles/
+/build-first-vr.log
+/build-session-probe.log
+/build-camera-test.log
+/build-dawn-probe.log
+/build-package.log
+build-ui-*.log
+
+/work/
+/build-first-person*.log
+__pycache__/
+*.pyc
+
+# Runtime/personal files must not be uploaded from this source snapshot.
+/profile/
+/statesaves/
+/GameFiles/

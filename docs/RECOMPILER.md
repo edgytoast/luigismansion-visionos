@@ -57,3 +57,25 @@ Runtime lessons:
 - Indirect calls reach code the symbol map merged into neighbours; the recompiler
   adds entry points for every address-taken code location and every branch target
   inside another function.
+
+### Guest arena and host-owned guest objects
+
+The game's arena extends to the end of MEM1, `0x81800000`. HLE-owned thread
+objects, interrupt stacks, strings and injected resources use a separate 1 MiB
+bump allocator at `0x81900000..0x81A00000`, inside the existing 64 MiB host
+address window. This avoids the locked cache, viewer scratch, early Luigi model
+copies and viewer heap. The disc file table is supplied by the host, so no guest
+arena reservation is needed for it.
+
+Previously, reserving `0x81700000..0x81800000` for HLE removed 1 MiB from the
+game's heaps. On PAL, the initial upstairs door sequence exhausted the scene
+heap: a `0x4E280`-byte allocation failed, and the resource decompressor wrote
+through its zero destination into low memory. This overwrote the bus clock at
+`0x800000F8`, causing a frozen door scene followed by sustained fast gameplay.
+The original retrace and alarm timing are retained; the fix restores the arena.
+
+Regression route: new PAL game, try the locked foyer door upstairs, return for
+the ghost and key, collect the key, then unlock and enter the door. Check that
+the clock words remain `0x09A7EC80` / `0x1CF7C580`, the resource allocation
+succeeds, and ordinary gameplay returns to 30 updates per second after the
+door close-up. Use scratch APPDATA and memory-card directories.

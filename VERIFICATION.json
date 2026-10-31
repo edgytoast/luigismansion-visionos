@@ -1,0 +1,27 @@
+{
+  "vr_build": 150,
+  "launcher_checks": [
+    "Diorama --check passed with bundled OpenXR loader",
+    "Flat --flat --check passed without OpenXR requirement"
+  ],
+  "source_configuration": "Standalone source snapshot configured without retail disc/DOL; dependencies reused from local cache for verification",
+  "snapshot_tests": [
+    "vr-camera passed",
+    "vr-avatar passed",
+    "checkpoint-input passed",
+    "hle-registration-unique passed"
+  ],
+  "working_source_files_hash_verified": 1675,
+  "excluded": [
+    "ROM/disc images",
+    "Nintendo assets",
+    "retail DOL/REL",
+    "generated retail source/modules",
+    "personal checkpoint files",
+    "memory cards",
+    "shader caches/logs",
+    "Git history",
+    "local build outputs"
+  ],
+  "full_clean_host_rebuild": "Not repeated; playable EXE hash matches tested working build 150. Snapshot regression targets were rebuilt."
+}

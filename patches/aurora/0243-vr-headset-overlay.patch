@@ -1,0 +1,98 @@
+--- a/lib/webgpu/gpu.hpp
++++ b/lib/webgpu/gpu.hpp
+@@ -75,6 +75,8 @@
+ TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled);
+ bool enable_normal_buffer();
+ const TextureWithSampler& present_source() noexcept;
++TextureWithSampler& vr_present_target() noexcept;
++const TextureWithSampler& vr_present_source() noexcept;
+ wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source);
+ void set_resampler(AuroraSampler sampler) noexcept;
+ AuroraSampler get_resampler() noexcept;
+--- a/lib/webgpu/gpu.cpp
++++ b/lib/webgpu/gpu.cpp
+@@ -349,6 +349,16 @@
+ const TextureWithSampler& present_source() noexcept {
+   return g_graphicsConfig.msaaSamples > 1 ? g_frameBufferResolved : g_frameBuffer;
+ }
++
++TextureWithSampler& vr_present_target() noexcept {
++  static TextureWithSampler target;
++  const auto& source = present_source();
++  if (!target.view || target.size.width != source.size.width || target.size.height != source.size.height ||
++      target.format != g_graphicsConfig.surfaceConfiguration.format)
++    target = create_render_texture(source.size.width, source.size.height, false);
++  return target;
++}
++const TextureWithSampler& vr_present_source() noexcept { return vr_present_target(); }
+ 
+ void set_resampler(AuroraSampler sampler) noexcept {
+   switch (sampler) {
+--- a/lib/imgui.hpp
++++ b/lib/imgui.hpp
+@@ -24,7 +24,7 @@
+   std::shared_ptr<Impl> m_impl;
+ 
+   friend DrawData freeze() noexcept;
+-  friend void render(const wgpu::RenderPassEncoder& pass, const DrawData& drawData) noexcept;
++  friend void render(const wgpu::RenderPassEncoder& pass, const DrawData& drawData, float width, float height) noexcept;
+ };
+ 
+ void create_context() noexcept;
+@@ -35,5 +35,5 @@
+ void set_cursor_managed(bool managed) noexcept;
+ void new_frame(const AuroraWindowSize& size) noexcept;
+ DrawData freeze() noexcept;
+-void render(const wgpu::RenderPassEncoder& pass, const DrawData& drawData) noexcept;
++void render(const wgpu::RenderPassEncoder& pass, const DrawData& drawData, float width=0, float height=0) noexcept;
+ } // namespace aurora::imgui
+--- a/lib/imgui.cpp
++++ b/lib/imgui.cpp
+@@ -274,7 +274,7 @@
+   return DrawData{std::move(frozen)};
+ }
+ 
+-void render(const wgpu::RenderPassEncoder& pass, const DrawData& drawData) noexcept {
++void render(const wgpu::RenderPassEncoder& pass, const DrawData& drawData, float width, float height) noexcept {
+   ZoneScoped;
+ 
+   if (!drawData.m_impl) {
+@@ -291,7 +291,11 @@
+     SDL_RenderPresent(renderer);
+   } else {
+     pass.PushDebugGroup("Aurora: Dear Imgui");
++    const auto savedScale = data->FramebufferScale;
++    if (width > 0 && height > 0 && data->DisplaySize.x > 0 && data->DisplaySize.y > 0)
++      data->FramebufferScale = {width / data->DisplaySize.x, height / data->DisplaySize.y};
+     ImGui_ImplWGPU_RenderDrawData(data, pass.Get());
++    data->FramebufferScale = savedScale;
+     pass.PopDebugGroup();
+   }
+ }
+--- a/lib/aurora.cpp
++++ b/lib/aurora.cpp
+@@ -594,6 +594,24 @@
+     const activity::Scope busy{activity::Thread::RenderWorker, "finishing the frame (keep-warm, submit)"};
+     present_timing::encode_keep_warm(encoder);  // 0215: after the frame's own work
+     shot_encode(encoder);                       // 0224 test aid
++    // The XR transfer reads a game texture, not the desktop swapchain. Composite
++    // its per-eye UI explicitly, including offscreen right-eye submissions.
++    static const bool vrOverlay = [] { const char* value = std::getenv("LM_VR"); return value && std::string_view(value) == "1"; }();
++    if (vrOverlay) {
++      const auto& target = webgpu::vr_present_target();
++      const auto bindGroup = webgpu::create_copy_bind_group(webgpu::present_source());
++      const wgpu::RenderPassColorAttachment attachment{
++          .view = target.view, .loadOp = wgpu::LoadOp::Clear, .storeOp = wgpu::StoreOp::Store};
++      const wgpu::RenderPassDescriptor descriptor{
++          .label = "VR game and overlay", .colorAttachmentCount = 1, .colorAttachments = &attachment};
++      const auto pass = encoder.BeginRenderPass(&descriptor);
++      pass.SetViewport(0, 0, float(target.size.width), float(target.size.height), 0, 1);
++      pass.SetPipeline(webgpu::g_CopyPipeline);
++      pass.SetBindGroup(0, bindGroup, 0, nullptr);
++      pass.Draw(3);
++      imgui::render(pass, imguiDrawData, float(target.size.width), float(target.size.height));
++      pass.End();
++    }
+     if (!sLateSubmit) {
+       ZoneScopedN("Frame Submit");
+       const wgpu::CommandBufferDescriptor frameBufDescriptor{.label = "Frame command buffer"};

@@ -5,6 +5,10 @@
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
 #include "recomp/pacing.h"
+#include "recomp/vr_host.h"
+#include "recomp/vr_avatar_guest.h"
+#include "recomp/version.h"
+#include "recomp/skip.h"
 #include "recomp/sched.h"
 
 #include <aurora/present_timing.h>
@@ -103,9 +107,11 @@ struct Patch {
     u16 stride = 0, posOffset = 0;  // Verts
     u32 bundle = ~0u;  // the draw it belongs to (index into Tape::bundleIds)
     u16 view = 0xFFFF;  // index into Tape::views: the camera it was noted under
+    u8 hudElement = 0; // 1: ordinary health, 2: Game Boy Horror; excludes projected ghost HP
     u8 role = 0;        // 1: a shadow receiver's texture matrix (noteShadowLight), 2: 2D (orthographic)
     TagCat cat = TagCat::None;  // category of the innermost object scope (policy)
     bool inScope = false;       // noted inside any tag scope (a view at least): untagged values outside are left as captured
+    bool vrOnly = false;        // fixed game-frame draw: capture for stereo, never interpolate
     bool ownCamera = false;     // noted in a SubView (its own camera: blended as drawn)
     u32 site = 0;       // guest call site (logs)
     u64 group = 0;      // TagFrame::group: values of one model instance switch together
@@ -138,6 +144,7 @@ struct TextView {
     u8 scissor = 0;
     u16 group = 0;  // index + 1 into Tape::textGroups
     float f = 1, c = 0;  // layout x -> pixel x
+    s32 projection = -1; // active projection for VR clipping alignment
 };
 
 using M34 = std::array<f32, 12>;
@@ -205,6 +212,16 @@ struct Tape {
     std::vector<u8> texMode;
     std::vector<s32> viewToA;  // per view: the view of pairedWith with the same key, or -1
     u16 mainView = 0xFFFF;     // the main camera (most 3D model matrices of the main pass)
+    u32 sceneId = 0; // captured on guest thread; title/file screens use a comfortable VR panel
+    vr::PlayerAnchor playerAnchor;
+    bool cinematic = false;
+    bool authoredRescue = false,conversationEvent=false,boundedDiorama=false,playerDemo=false,resultsScreen=false,resultsFlat=false,gameOver=false,storyGeometry=false,doorAnimation=false;
+    float scriptedFocus = 0.0f;
+    bool closeup = false;
+    bool roomDrawn = false;
+    bool searchTransition=false;
+    bool dialogue = false, pauseView = false, mapScreen = false, pickupPose = false, reactionPose = false;
+    u32 mapId = 0;
     bool cut = false;          // the main camera jumped since pairedWith (or appeared): shown as is
     float camMove = 0, camTurn = 0;  // the main camera's eye move / turn (degrees) since pairedWith
     u32 paired = 0, unpaired = 0, untagged = 0;
@@ -264,12 +281,17 @@ std::vector<u8> sBundlePass;
 std::vector<std::array<f32, 3>> sBundleCentre;
 std::vector<SlotCentres> sSlotCentres;  // (by bundle, ascending)
 s32 sOpenDraw = -1;  // immediate-mode draw whose end is not known yet
+vr::PlayerAnchor sVrPlayer;
 std::vector<M34> sViews;
 std::vector<u64> sViewKeys;
 ShadowLight sShadow;
 int sShadowRecv = 0;
 u32 sPass = 0;
 bool sOrtho = false;
+unsigned sHudElement=0;
+u32 sSearchTransitionUntil=0;
+bool sSearchClosing=false;
+bool sGameBoyMapDrawn = false,sPlayerDemoDrawn=false,sDoorAnimationDrawn=false,sResultsScreenDrawn=false,sResultsFlat=false;
 std::vector<TextGroupRec> sTextGroups;
 int sTextDepth = 0;
 std::vector<TextView> sTextViews;
@@ -1556,6 +1578,10 @@ void beginTape() {
     sUngrouped = 0;
     sTextGroups.clear();
     sTextViews.clear();
+    sGameBoyMapDrawn = false;
+    sPlayerDemoDrawn=false;sDoorAnimationDrawn=false;
+    sResultsScreenDrawn=false;
+    sResultsFlat=false;
     sBackSteps.clear();
     sTextCur = 0;
     sTextDepth = 0;
@@ -1650,6 +1676,75 @@ void endTape(u32 retraceCount) {
     tape->textures = std::move(textures);
     tape->textureBytes = textureBytes;
     tape->retrace = retraceCount;
+    tape->sceneId = rd32(VA(0x804D80A0));
+    const auto viewFrame=copyDispCount();
+    if(sSearchClosing && !skip::gameBoyView()) {
+        sSearchTransitionUntil=std::min(sSearchTransitionUntil,viewFrame+2);sSearchClosing=false;
+    }
+    if(sSearchClosing && viewFrame>sSearchTransitionUntil)sSearchClosing=false;
+    tape->searchTransition=sSearchTransitionUntil && viewFrame<=sSearchTransitionUntil;
+    // Events can move Luigi while the normal gameplay view-update hook is idle.
+    // Snapshot the live actor here on the guest thread, never during host replay.
+    tape->playerAnchor=vravatar::captureAnchor();
+    tape->gameOver=tape->sceneId==2 && vravatar::gameOverActive();
+    tape->pickupPose = vravatar::pickupPresentation();
+    tape->reactionPose = vravatar::reactionPresentation();
+    tape->cinematic = skip::cinematicCamera();
+    tape->authoredRescue=vravatar::rescueEventCamera();
+    tape->conversationEvent=vravatar::conversationEventCamera();
+    tape->boundedDiorama=vravatar::boundedDioramaCamera();
+    tape->playerDemo=sPlayerDemoDrawn;
+    tape->doorAnimation=sDoorAnimationDrawn;
+    tape->resultsScreen=sResultsScreenDrawn;
+    tape->resultsFlat=sResultsFlat;
+    const bool textShown=std::any_of(tape->patches.begin(),tape->patches.end(),[&](const Patch& p) {
+        return p.kind==Kind::Verts && p.tgroup && p.tgroup<=tape->textGroups.size() &&
+               tape->textGroups[p.tgroup-1].id==0x80044138u;
+    });
+    tape->dialogue = skip::dialogueCamera(textShown);
+    // Phone/dialogue bezels can briefly raise the framed flag while entering an
+    // event; that does not make the surrounding room a menu.
+    tape->pauseView = skip::gameBoyView() && !tape->cinematic && !tape->dialogue;
+    // Continue/Quit is an explicit Start request; missing room geometry alone
+    // also occurs while an NPC event changes scene and must not select a menu.
+    const bool roomDrawn=std::any_of(tape->patches.begin(),tape->patches.end(),[](const Patch& p) {
+        return p.kind==Kind::PosMtx && p.role==0 && !p.ownCamera && p.cat==TagCat::World;
+    });
+    tape->roomDrawn=roomDrawn;
+    // Y's full-screen GBH interface can reuse its cached map, so no map draw
+    // hook fires on those frames. It still needs the stereo menu presentation.
+    // Search descriptions use an event while the full-screen device stays open.
+    // MENUOFF/dialogue must not promote its bezel into the room camera.
+    const bool searchInspection=skip::gameBoyView() && vravatar::searchInspectionEvent();
+    const bool statusMenu=skip::statusMenuView();
+    tape->mapScreen=!statusMenu && (sGameBoyMapDrawn || tape->pauseView || searchInspection);
+    tape->pauseView = tape->pauseView || sGameBoyMapDrawn || statusMenu || skip::pauseMenuView(roomDrawn);
+    if(vrhost::enabled()) {
+        const u32 state=(tape->pauseView?1u:0u)|(sGameBoyMapDrawn?2u:0u)|(roomDrawn?4u:0u)|
+                        (tape->cinematic?8u:0u)|(tape->dialogue?16u:0u);
+        static u32 last=~0u;
+        if(state!=last) {last=state;log("[vr view] flags %02X scene %u GBH mode %u",state,tape->sceneId,rd32(VA(0x804CFFF0)));}
+    }
+    std::vector<float> actorDepths;
+    for(const Patch& p:tape->patches) if(p.kind==Kind::PosMtx && p.count==12 && p.role==0 &&
+       (!p.ownCamera || (vrhost::expandedStoryScenes() && (tape->playerDemo || tape->sceneId==4 || tape->sceneId==5 || tape->sceneId==6))) &&
+       (p.cat==TagCat::Object || p.cat==TagCat::SubView || tape->sceneId==5) && (p.bundle>=tape->bundlePass.size() || tape->bundlePass[p.bundle]==0)) {
+        const float depth=-loadBE(tape->bytes.data()+p.offset+44);
+        if(std::isfinite(depth) && depth>1) actorDepths.push_back(depth);
+    }
+    if(!actorDepths.empty()) {
+        std::sort(actorDepths.begin(),actorDepths.end());tape->scriptedFocus=actorDepths[actorDepths.size()/2];
+    }
+    tape->mapId = rd32(VA(0x804D80C8));
+    tape->storyGeometry=std::any_of(tape->patches.begin(),tape->patches.end(),[&](const Patch& p){
+        return p.kind==Kind::PosMtx && p.role==0 && p.projPatch>=0 &&
+            (p.bundle>=tape->bundlePass.size()||tape->bundlePass[p.bundle]==0) &&
+            tape->patches[u32(p.projPatch)].kind==Kind::Projection &&
+            tape->bytes[tape->patches[u32(p.projPatch)].offset+27]==GX_PERSPECTIVE;
+    });
+    tape->closeup = std::any_of(tape->patches.begin(),tape->patches.end(),[](const Patch& p) {
+        return p.ownCamera && p.kind==Kind::PosMtx && p.role==0;
+    });
     if (sTrackOut) {
         tape->trackOk = detail::trackPoints(tape->track.data());
         const auto& t = tape->track;
@@ -1781,7 +1876,7 @@ void pushTextGroupJoin(u32 id) {
         }
 }
 void noteTextView(u32 at, bool scissor, float f, float c) {
-    if (at == ~0u || !capturing() || sFrameLock > 0) return;
+    if (at == ~0u || !capturing() || (sFrameLock > 0 && !vrhost::enabled())) return;
     u16 g = sTextCur;
     if (!g && sTextViewJoin)
         for (u32 k = u32(sTextGroups.size()); k-- > 0;)
@@ -1789,7 +1884,7 @@ void noteTextView(u32 at, bool scissor, float f, float c) {
                 g = u16(k + 1);
                 break;
             }
-    if (!g) return;
+    if (!g && !vrhost::enabled()) return;
     const u32 end = sBase + AuroraCapturePos();
     // Viewport: XF write 0x10, header 0x0005101A, 6 floats. Scissor: BP 0x61 0x20 (top, left),
     // 0x61 0x21 (bottom, right).
@@ -1797,8 +1892,14 @@ void noteTextView(u32 at, bool scissor, float f, float c) {
     if (scissor && !(at + 10 <= end && sScratch[at] == 0x61 && sScratch[at + 1] == 0x20 && sScratch[at + 5] == 0x61 &&
                      sScratch[at + 6] == 0x21))
         return;
-    sTextViews.push_back({at, u8(scissor), g, f, c});
+    sTextViews.push_back({at, u8(scissor), g, f, c, sLastProj});
 }
+void noteResultsScreen(bool flat) {if(capturing()){sResultsScreenDrawn=true;sResultsFlat|=flat;}}
+void noteDoorAnimation(){if(capturing())sDoorAnimationDrawn=true;}
+void notePlayerDemo() {if(capturing())sPlayerDemoDrawn=true;}
+unsigned setHudElement(unsigned element){const auto old=sHudElement;sHudElement=element;return old;}
+void noteSearchToggle(bool closing){sSearchClosing=closing;sSearchTransitionUntil=copyDispCount()+(closing?30:3);}
+void noteGameBoyMap() {if(capturing()) sGameBoyMapDrawn=true;}
 void noteTextViewport(u32 at, float f, float c) { noteTextView(at, false, f, c); }
 void noteTextScissor(u32 at, float f, float c) { noteTextView(at, true, f, c); }
 void pushTextViewJoin(u32 id) {
@@ -1968,11 +2069,12 @@ u64 valueKey(Kind kind, u32 source, u32 slot, TagCat& cat) {
 
 void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
     if (kind == Kind::PosMtx && slot % 3 == 0 && slot / 3 < 10) sLastPosMtx[slot / 3] = -1;  // (set below when noted)
-    if (at == ~0u || !capturing() || sNoBlend + sFrameLock > 0) return;
+    if (at == ~0u || !capturing() || (sNoBlend + sFrameLock > 0 && !vrhost::enabled())) return;
     if (sLinearPos > 0 && kind == Kind::PosMtx) kind = Kind::TexMtx;  // element-wise, own key
     // Aurora writes XF loads as 0x10, a u32 header, then the values.
     if (at + 5 + 4 * u32(first + nFloats) > sBase + AuroraCapturePos() || sScratch[at] != 0x10) return;
     Patch p{at + 5 + 4 * u32(first), u16(nFloats), kind};
+    p.vrOnly = sNoBlend + sFrameLock > 0;
     p.source = source;
     p.slot = slot;
     p.site = sCallLr;
@@ -1985,6 +2087,7 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
         sSlotPatch[slot / 3] = s32(sPatches.size());
     p.tgroup = sTextCur;
     if (kind == Kind::PosMtx && slot % 3 == 0 && slot / 3 < 10) sLastPosMtx[slot / 3] = s32(sPatches.size());
+    if (kind == Kind::PosMtx) p.projPatch=sLastProj;
     if (kind == Kind::Projection) sLastProj = s32(sPatches.size());
     // (Inside a SubView the game camera is not the one these values were built with: not factored.)
     const TagFrame* tf = topTag();
@@ -2044,7 +2147,7 @@ void noteColor(u32 off, u16 format, u32 reg, u32 light = 0) {
 }
 
 void noteColors(u32 at, u32 lightObj) {
-    if (at == ~0u || !capturing() || sNoBlend + sFrameLock > 0) return;
+    if (at == ~0u || !capturing() || (sNoBlend + sFrameLock > 0 && !vrhost::enabled())) return;
     const u32 end = sBase + AuroraCapturePos();
     u32 light = 0;  // the Light value just noted for lightObj (index + 1)
     if (lightObj && !sPatches.empty() && sPatches.back().kind == Kind::Light && sPatches.back().source == lightObj)
@@ -2991,16 +3094,18 @@ bool sVertsTracked = false;  // tagTracked of that scope
 bool sVertsLocked = false;  // begun inside a text box (pushFrameLock): its vertices are not noted
 TagCat sVertsCat = TagCat::None;
 u32 sVertsSite = 0;
+u8 sVertsHudElement=0;
 std::string sVertsChain;
 }  // namespace
 void detail::vertsBegin(bool ortho) {
     if (!capturing()) return;
     // The block is noted when its vertices are complete, at the next GX call: possibly after the
     // text box's scope closed (the window's last quad blended while the rest of it was locked).
+    sVertsHudElement=u8(sHudElement);
     sVertsLocked = sFrameLock > 0;
     sVertsText = sTextCur;
     sVertsMtx = sCurMtxSlot < 10 ? sLastPosMtx[sCurMtxSlot] : -1;
-    if (sVertsLocked) return;
+    if (sVertsLocked && !vrhost::enabled()) return;
     sVertsSite = sCallLr;
     sVertsKey = valueKey(Kind::Verts, 0, 0, sVertsCat);
     {
@@ -3025,7 +3130,9 @@ void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, 
     const bool locked = sVertsLocked;
     sVertsLocked = false;
     if (locked) sVertsKey = 0;
-    if (!capturing() || locked || count == 0 || count > 0xFFFF) return;
+    // VR still needs draw-local coordinates for HUD placement on frame-locked
+    // glyphs/shadows. Keep their interpolation key zero, but record the draw.
+    if (!capturing() || (locked && !vrhost::enabled()) || count == 0 || count > 0xFFFF) return;
     Patch p{at, u16(count), Kind::Verts};
     p.stride = u16(stride);
     p.posOffset = u16(posOffset);
@@ -3037,6 +3144,7 @@ void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, 
     if (clrBytes && clrOffset + clrBytes <= stride) p.clrOffset = u16(clrOffset), p.clrBytes = u8(clrBytes);
     // The key was taken at GXBegin (vertsBegin): the scope may have closed by the time the draw's
     // vertices are complete (noted at the next GX call).
+    p.hudElement=sVertsHudElement;
     p.site = sVertsSite;
     p.cat = sVertsCat;
     p.key = sVertsKey ? mix(sVertsKey ^ id) : 0;  // the same layout (vertex count is checked when pairing)
@@ -3136,7 +3244,7 @@ void resumeAfterDisplayList() {
 
 namespace {
 
-u64 sEndSeq[4] = {};  // per replay state slot: the tape whose end state it holds (host side)
+u64 sEndSeq[12] = {};  // per replay state slot: the tape whose end state it holds (host side)
 
 // --- camera factoring (3x4 row-major matrices as the affine 4x4 [M; 0 0 0 1]) ---
 // out = a x b (a may be any 3x4, e.g. a projective texture matrix's rows).
@@ -4140,8 +4248,38 @@ bool skinMatrix(const f32* m) {
 //   never faded;
 // - a camera cut shows b as captured.
 void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
+    const vr::SceneState presentationState{b.sceneId,b.mapId,b.cinematic,b.closeup,b.dialogue,b.pauseView,b.mapScreen,b.authoredRescue,b.conversationEvent,b.boundedDiorama,b.playerDemo,b.resultsScreen,b.resultsFlat,b.gameOver,b.storyGeometry,b.doorAnimation};
+    const auto baselinePresentation=vr::presentationFor(presentationState,vrhost::diorama(),b.roomDrawn,false);
+    auto presentation=vr::presentationFor(presentationState,vrhost::diorama(),b.roomDrawn,vrhost::expandedStoryScenes());
+    vrhost::holdSearchTransition(b.searchTransition && !b.resultsScreen && !b.gameOver);
+    // Keep in-engine events at Luigi's eyes; menus and separate demo rigs retain
+    // their existing presentation. Head tracking does not restore scripted control.
+    if(!b.gameOver && !b.doorAnimation && vrhost::firstPerson() && b.sceneId==2 && b.playerAnchor.valid && b.dialogue && !b.pauseView && !b.mapScreen && !b.resultsScreen)
+        presentation=vr::Presentation::World;
+    if(!b.gameOver && !b.doorAnimation && vrhost::firstPerson() && (b.pickupPose || b.reactionPose) && !b.pauseView && !b.mapScreen)
+        presentation=vr::Presentation::StereoPanel;
+    if(vrhost::enabled()) {
+        static auto lastPresentation=vr::Presentation::World;
+        if(presentation!=lastPresentation){
+            lastPresentation=presentation;
+            log("[vr decision] presentation %u scene %u map %u room %d cinema %d close %d speech %d pause %d mapUI %d rescue %d conversation %d playerDemo %d results %d flat %d",unsigned(presentation),b.sceneId,b.mapId,b.roomDrawn,b.cinematic,b.closeup,b.dialogue,b.pauseView,b.mapScreen,b.authoredRescue,b.conversationEvent,b.playerDemo,b.resultsScreen,b.resultsFlat);
+        }
+    }
+    const bool creditsView=vrhost::expandedStoryScenes() && b.sceneId==5 && b.mapId==12;
+    vrhost::setCreditsView(creditsView);
+    const bool expandedWorld=vrhost::expandedStoryScenes() && baselinePresentation!=vr::Presentation::World &&
+        presentation==vr::Presentation::World &&
+        !b.pauseView && !b.mapScreen && !b.resultsScreen && !b.gameOver && b.storyGeometry &&
+        (b.cinematic||b.closeup||b.playerDemo||b.sceneId==0||b.sceneId==4||b.sceneId==5||b.sceneId==6);
+    const bool expandedSubview=expandedWorld && (b.playerDemo || !b.roomDrawn);
+    const bool cinematic=presentation==vr::Presentation::StereoPanel;
+    if(vrhost::enabled()) vrhost::setWorldScene(presentation==vr::Presentation::World,cinematic,(creditsView || expandedWorld || b.cinematic && !b.dialogue || vrhost::diorama() && (b.dialogue || b.closeup)) && presentation==vr::Presentation::World,b.scriptedFocus,vrhost::diorama()&&((b.boundedDiorama&&b.cinematic)||expandedWorld),b.mapScreen||b.searchTransition);
+    if (b.cut && !cinematic && !vrhost::firstPerson() && !vrhost::diorama() && vrhost::activeEye()) vrhost::cameraCut(b.seq);
+    vrhost::setSceneAperture(nullptr);
     sCrossCamera = 0;
     sReplay.assign(b.bytes.begin(), b.bytes.end());
+    struct HudProjectionMove {u32 begin,end,projection;float dx,dy;bool device;};
+    std::vector<HudProjectionMove> hudProjectionMoves;
     if (a && b.pairedWith != a) a = nullptr;  // not consecutive (a tape was dropped): no pairing
     if (a && b.cut) {
         sCuts++;
@@ -4550,6 +4688,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
         blendedProj.clear();
         for (u32 i = 0; i < b.patches.size(); i++) {
             const Patch& p = b.patches[i];
+            if(p.vrOnly) continue;
             // Text boxes are blended as one layout (replayTextGroups); their 2D projections as usual.
             if (p.tgroup && p.kind != Kind::Projection) continue;
             if (p.kind == Kind::Color) {
@@ -5189,6 +5328,334 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
         const u64 ptr = u64(reinterpret_cast<uintptr_t>(dump));
         for (int k = 0; k < 8; k++) sReplay[b.dumpOffset + k] = u8(ptr >> (56 - 8 * k));
     }
+    // Stereo is applied after interpolation, to this eye's independent command bytes.
+    // Shadow-map passes and orthographic/subview draws keep their captured cameras.
+    if (const auto* active = vrhost::activeEye()) {
+        auto camera=*active;
+        const auto* eye=&camera;
+        float stereoFocus=200.0f;
+        if(eye->cinematic) {
+            std::vector<float> depths;
+            std::unordered_set<u32> mapProjections;
+            if(b.mapScreen) for(const Patch& p:b.patches)
+                if(p.kind==Kind::PosMtx && p.projPatch>=0 && (p.ownCamera || p.cat==TagCat::World || p.cat==TagCat::Object))
+                    mapProjections.insert(u32(p.projPatch));
+            float nearDistance=0.0f,focalScale=1.0f,orthoScale=0.0f;
+            for(const Patch& p:b.patches) {
+                if(p.kind==Kind::PosMtx && p.count==12 && (p.role==0 || (b.mapScreen && (p.ownCamera || p.cat==TagCat::World || p.cat==TagCat::Object)))) {
+                    const float depth=-loadBE(sReplay.data()+p.offset+44);
+                    if(std::isfinite(depth) && depth>1 && (p.ownCamera || b.mapScreen || !b.closeup)) depths.push_back(depth);
+                }
+                if(b.mapScreen && (p.ownCamera || mapProjections.count(u32(&p-b.patches.data()))) && p.kind==Kind::Projection && p.count==6 && sReplay[p.offset+27]==GX_ORTHOGRAPHIC)
+                    orthoScale=std::max(orthoScale,std::fabs(loadBE(sReplay.data()+p.offset)));
+                if(p.kind==Kind::Projection && p.count==6 && sReplay[p.offset+27]==GX_PERSPECTIVE &&
+                   (p.ownCamera || b.mapScreen || !b.closeup) && (p.bundle>=b.bundlePass.size() || b.bundlePass[p.bundle]==0)) {
+                    const float n=loadBE(sReplay.data()+p.offset+20)/(loadBE(sReplay.data()+p.offset+16)-1.0f);
+                    if(std::isfinite(n) && n>0) nearDistance=nearDistance>0?std::min(nearDistance,n):n;
+                    focalScale=std::max(focalScale,std::fabs(loadBE(sReplay.data()+p.offset)));
+                }
+            }
+            if(!depths.empty()) {
+                std::sort(depths.begin(),depths.end());stereoFocus=depths[depths.size()/2];
+            }
+            // The menu/hand camera's near clip is not the visible map surface.
+            // Use captured model depths with a conservative half-distance margin.
+            const bool wideDiorama=vrhost::diorama()&&b.sceneId==2&&b.cinematic&&!b.authoredRescue&&!b.dialogue&&!b.closeup;
+            // A wide room camera may record only its camera origin, or no actor
+            // matrices. Its clip plane is empty space, not visible foreground.
+            // Bound the fallback against scene focus rather than flattening the
+            // complete shot against the native ten-unit near plane.
+            if(wideDiorama && depths.empty() && b.scriptedFocus>1)stereoFocus=b.scriptedFocus;
+            const float geometryNear=depths.empty()?(wideDiorama?stereoFocus*0.25f:nearDistance):depths.front()*0.5f;
+            const float effectiveNear=std::max(nearDistance,geometryNear);
+            float offset=effectiveNear>0 ? vr::comfortableStereoEyeOffset(effectiveNear,stereoFocus,focalScale) : 0.75f;
+            if(b.mapScreen && orthoScale>0) offset=vr::orthographicStereoEyeOffset(stereoFocus,orthoScale);
+            if(!b.mapScreen && !wideDiorama)offset=std::min(offset,3.2f);
+            camera.eyeOffset=std::copysign(offset*(b.mapScreen?1.0f:vrhost::animationDepth()),camera.eyeOffset);
+            camera.transform[3]=-camera.eyeOffset;camera.inverse[3]=camera.eyeOffset;
+            static unsigned reports=0,mapReports=0,demoReports=0;
+            static bool wasDemo=false;
+            if(b.playerDemo&&!wasDemo)demoReports=0;
+            wasDemo=b.playerDemo;
+            if(b.playerDemo&&demoReports++<6)
+                log("[vr player demo] focus %.2f near %.2f half eye %.4f matrices %u",stereoFocus,nearDistance,camera.eyeOffset,unsigned(depths.size()));
+            if((b.mapScreen && mapReports++<8) || (!b.mapScreen && reports++<8))
+                log("[vr stereo] map %d focus %.2f near %.2f ortho %.5f half eye %.4f matrices %u",b.mapScreen,stereoFocus,nearDistance,orthoScale,camera.eyeOffset,unsigned(depths.size()));
+        }
+        unsigned transformedPositions=0, transformedProjections=0;
+        u16 sceneView=b.mainView;
+        if(expandedSubview) {
+            // Dedicated item/door rigs are independent of the room camera.
+            // Select the primary perspective rig, not its reflection or HUD portrait.
+            std::vector<unsigned> counts(b.views.size(),0);
+            for(const Patch& p:b.patches)if(p.ownCamera && p.kind==Kind::PosMtx && p.role==0 &&
+                p.view<counts.size() && (p.bundle>=b.bundlePass.size()||b.bundlePass[p.bundle]==0))++counts[p.view];
+            unsigned best=0;for(unsigned i=0;i<counts.size();++i)if(counts[i]>best){best=counts[i];sceneView=u16(i);}
+        }
+        if(sceneView==0xFFFF) {
+            std::vector<unsigned> counts(b.views.size(),0);
+            for(const Patch& p:b.patches)
+                if(p.kind==Kind::PosMtx && p.role==0 && !p.ownCamera && p.view<counts.size()) ++counts[p.view];
+            unsigned best=0;
+            for(unsigned i=0;i<counts.size();++i) if(counts[i]>best) {best=counts[i];sceneView=u16(i);}
+        }
+        // A projection can be shared by a J2D pane and a later full-screen EFB
+        // copy. Only remap projections whose recorded draw users are all UI.
+        std::unordered_set<u32> hudProjections, mixedProjections;
+        for(const Patch& p:b.patches) if(p.kind==Kind::Verts && p.projPatch>=0) {
+            if(p.cat==TagCat::Hud || p.tgroup) hudProjections.insert(u32(p.projPatch));
+            else mixedProjections.insert(u32(p.projPatch));
+        }
+        // A text group includes both J2D pictures and raw font draws. Its
+        // projection must be remapped consistently even if a glyph lacks a pane tag.
+        for(u32 i=0;i<b.patches.size();++i) if(b.patches[i].kind==Kind::Projection && b.patches[i].tgroup) {
+            hudProjections.insert(i);mixedProjections.erase(i);
+        }
+        const auto mappedHud=[&](u32 i) {
+            return hudProjections.count(i) && !mixedProjections.count(i);
+        };
+        std::unordered_set<u32> dialogueProjections;
+        for(u32 i=0;i<b.patches.size();++i) {
+            const Patch& p=b.patches[i];
+            if(!p.tgroup || p.tgroup>b.textGroups.size())continue;
+            const u32 group=b.textGroups[p.tgroup-1].id;
+            if(group!=0x80044138u && !(b.dialogue && group==0x8003D634u))continue;
+            if(p.kind==Kind::Projection) dialogueProjections.insert(i);
+            if(p.kind==Kind::Verts && p.projPatch>=0) dialogueProjections.insert(u32(p.projPatch));
+        }
+        // A cinema panel already has its own comfortable placement. Preserve
+        // native text size there rather than shrinking it by the HMD HUD twice.
+        const std::array<float,4> projectionHud=eye->cinematic?std::array<float,4>{1,1,0,0}:eye->hud;
+        const auto messageHud=eye->cinematic?projectionHud:vr::dialogueOverlayHud(eye->dialogueHud,vrhost::dialogueLift());
+        const bool adjustStatus=!eye->cinematic&&!b.pauseView&&!b.mapScreen;
+        const auto statusLayout=vrhost::hudLayout();
+        // Measure the native lower edge of both complete elements. Boss arenas
+        // may place health differently; preserve each element's size/layout.
+        float bottoms[2]{1e20f,1e20f};
+        if(adjustStatus)for(const Patch& p:b.patches){
+            if((p.hudElement!=1&&p.hudElement!=2)||!is2DBlock(p)||p.projPatch<0)continue;
+            const Patch& proj=b.patches[u32(p.projPatch)];
+            if(proj.kind!=Kind::Projection||b.bytes[proj.offset+27]!=GX_ORTHOGRAPHIC)continue;
+            auto matrix=blockMatrix(b,p);
+            if(p.mtxPatch>=0){const Patch& m=b.patches[u32(p.mtxPatch)];if(m.kind==Kind::PosMtx){
+                const unsigned indices[]{0,1,3,4,5,7};for(unsigned i=0;i<6;++i)matrix.m[i]=loadBE(sReplay.data()+m.offset+indices[i]*4);}}
+            for(unsigned v=0;v<p.count;++v){float local[2],world[2];readShown(p,v,local);matrix.apply(local,world);
+                const float y=val(b,proj,2)*world[1]+val(b,proj,3);
+                if(std::isfinite(y))bottoms[p.hudElement-1]=std::min(bottoms[p.hudElement-1],y);}
+        }
+        const float deviceLift=bottoms[0]<1e10f&&bottoms[1]<1e10f?std::clamp(bottoms[0]-bottoms[1],-0.3f,0.3f):0.05f;
+
+        const auto statusHud=[&](float side,bool gameBoy=false){auto hud=projectionHud;
+            if(adjustStatus){hud[2]+=hud[0]*(statusLayout[0]+side*statusLayout[2]);
+                // Align the idle device and matching clip rectangles to health.
+                hud[3]+=hud[1]*(statusLayout[1]+(gameBoy?deviceLift:0.f));}
+            return hud;};
+        // Assign spacing to complete HUD clusters, never individual glyphs.
+        // A trailing zero or one-pixel shadow may cross a per-draw boundary.
+        struct HudCluster {const Patch* draw;float l,r,t,b;unsigned root;};
+        std::vector<HudCluster> statusClusters;
+        if(adjustStatus)for(const Patch& p:b.patches) {
+            if(!is2DBlock(p)||p.projPatch<0||!mappedHud(u32(p.projPatch)))continue;
+            const u32 group=p.tgroup&&p.tgroup<=b.textGroups.size()?b.textGroups[p.tgroup-1].id:0;
+            if(group==0x80044138u||(b.dialogue&&group==0x8003D634u))continue;
+            const Patch& proj=b.patches[u32(p.projPatch)];
+            if(proj.kind!=Kind::Projection||b.bytes[proj.offset+27]!=GX_ORTHOGRAPHIC)continue;
+            auto matrix=blockMatrix(b,p);
+            if(p.mtxPatch>=0){const Patch& m=b.patches[u32(p.mtxPatch)];if(m.kind==Kind::PosMtx){
+                const unsigned indices[]{0,1,3,4,5,7};for(unsigned i=0;i<6;++i)matrix.m[i]=loadBE(sReplay.data()+m.offset+indices[i]*4);}}
+            HudCluster bounds{&p,1e20f,-1e20f,1e20f,-1e20f,unsigned(statusClusters.size())};
+            for(unsigned v=0;v<p.count;++v){float local[2],world[2];readShown(p,v,local);matrix.apply(local,world);
+                const float x=val(b,proj,0)*world[0]+val(b,proj,1),y=val(b,proj,2)*world[1]+val(b,proj,3);
+                bounds.l=std::min(bounds.l,x);bounds.r=std::max(bounds.r,x);bounds.t=std::min(bounds.t,y);bounds.b=std::max(bounds.b,y);}
+            if(bounds.r-bounds.l<1.5f&&bounds.b-bounds.t<1.5f)statusClusters.push_back(bounds);
+        }
+        const auto clusterRoot=[&](unsigned i){while(statusClusters[i].root!=i)i=statusClusters[i].root;return i;};
+        for(unsigned i=0;i<statusClusters.size();++i)for(unsigned j=0;j<i;++j){
+            const auto& a=statusClusters[i];const auto& c=statusClusters[j];
+            if(a.l<=c.r+0.025f&&c.l<=a.r+0.025f&&a.t<=c.b+0.02f&&c.t<=a.b+0.02f){
+                const unsigned ri=clusterRoot(i),rj=clusterRoot(j);if(ri!=rj)statusClusters[ri].root=rj;}}
+        std::unordered_map<const Patch*,float> statusSides;
+        for(unsigned i=0;i<statusClusters.size();++i){float l=1e20f,r=-1e20f;const unsigned root=clusterRoot(i);
+            for(unsigned j=0;j<statusClusters.size();++j)if(clusterRoot(j)==root){l=std::min(l,statusClusters[j].l);r=std::max(r,statusClusters[j].r);}
+            const float center=(l+r)*0.5f;statusSides[statusClusters[i].draw]=center < 0?-1.f:1.f;}
+        // Orthographic projections are shared with health. Change the message
+        // vertices in their draw-local coordinates, never that shared anchor.
+        for(const Patch& p:b.patches) {
+            if(!is2DBlock(p)||p.projPatch<0)continue;
+            const u32 group=p.tgroup&&p.tgroup<=b.textGroups.size()?b.textGroups[p.tgroup-1].id:0;
+            const bool message=group==0x80044138u||(b.dialogue&&group==0x8003D634u);
+            if(!message&&(!adjustStatus||!mappedHud(u32(p.projPatch))))continue;
+            const Patch& proj=b.patches[u32(p.projPatch)];
+            if(proj.kind!=Kind::Projection||b.bytes[proj.offset+27]!=GX_ORTHOGRAPHIC)continue;
+            auto matrix=blockMatrix(b,p);
+            if(p.mtxPatch>=0){const Patch& m=b.patches[u32(p.mtxPatch)];if(m.kind==Kind::PosMtx){
+                const unsigned indices[]{0,1,3,4,5,7};for(unsigned i=0;i<6;++i)matrix.m[i]=loadBE(sReplay.data()+m.offset+indices[i]*4);}}
+            float center=0;
+            for(unsigned v=0;v<p.count;++v){float local[2],world[2];readShown(p,v,local);matrix.apply(local,world);center+=val(b,proj,0)*world[0]+val(b,proj,1);}
+            center/=std::max(1u,unsigned(p.count));
+            const auto side=statusSides.find(&p);
+            const auto targetHud=message?messageHud:statusHud(side!=statusSides.end()?side->second:0.f,p.hudElement==2||group==0x8003D634u);
+            if(!message) {
+                // Keep packed positions intact; relocate the complete draw via projection.
+                if(p.offset>=3 && p.offset+u32(p.count)*p.stride<=sReplay.size())
+                    hudProjectionMoves.push_back({p.offset-3,p.offset+u32(p.count)*p.stride,u32(p.projPatch),targetHud[2]-projectionHud[2],targetHud[3]-projectionHud[3],p.hudElement==2||group==0x8003D634u});
+                continue;
+            }
+            for(unsigned v=0;v<p.count;++v){float local[2],world[2],out[2];readShown(p,v,local);matrix.apply(local,world);
+                for(unsigned axis=0;axis<2;++axis)world[axis]=vr::remapOverlayCoordinate(world[axis],val(b,proj,axis*2),val(b,proj,axis*2+1),projectionHud[axis],projectionHud[axis+2],targetHud[axis],targetHud[axis+2]);
+                if(matrix.invert(world,out))writePos(p,v,out);
+            }
+        }
+        for(const TextView& view:b.textViews) {
+            const bool callPortrait=view.group && view.group<=b.textGroups.size() && b.textGroups[view.group-1].id==0x8003D634u;
+            if(eye->cinematic && !callPortrait && (view.projection<0 || !dialogueProjections.count(u32(view.projection))))continue;
+            if(!callPortrait && (view.projection<0 || !mappedHud(u32(view.projection))))continue;
+            if(!callPortrait && sReplay[b.patches[u32(view.projection)].offset+27]!=GX_ORTHOGRAPHIC)continue;
+            // The idle money/radar bezel uses the health HUD plane; only an
+            // active call follows the dialogue plane. Its mask must match its vertices.
+            const bool messageView=(b.dialogue&&callPortrait) || (view.group&&view.group<=b.textGroups.size()&&b.textGroups[view.group-1].id==0x80044138u);
+            auto hud=messageView?messageHud:statusHud(callPortrait?1.f:0.f,callPortrait);
+            if(!view.scissor) {
+                if(!callPortrait)continue;
+                auto* vp=sReplay.data()+view.at+5;
+                if(std::fabs(loadBE(vp+4))>=239.0f)continue; // full-view resets remain full-view
+                storeBE(vp,loadBE(vp)*hud[0]);storeBE(vp+4,loadBE(vp+4)*hud[1]);
+                storeBE(vp+12,662.0f+hud[0]*(loadBE(vp+12)-662.0f)+320.0f*hud[2]);
+                storeBE(vp+16,582.0f+hud[1]*(loadBE(vp+16)-582.0f)-240.0f*hud[3]);
+                continue;
+            }
+            auto* o=sReplay.data()+view.at;
+            const auto field=[](const u8* w,int sh) {return int(((u32(w[2])<<16|u32(w[3])<<8|w[4])>>sh)&0x7FF);};
+            const float top=float(field(o,0)-342),left=float(field(o,12)-342);
+            const float bottom=float(field(o+5,0)-341),right=float(field(o+5,12)-341);
+            // A full-frame reset terminates a local clip; it is shared by all
+            // following HUD elements. Moving it with the device clips health
+            // and the Boo counter at the device's shifted edge.
+            if(left<=0 && top<=0 && right>=640 && bottom>=480)continue;
+            if(!messageView){const float center=(left+right)*0.5f;hud=statusHud(center<320?-1.f:1.f,callPortrait);}
+            const auto x=[&](float v) {return int(std::lround(hud[0]*(v-320)+320+320*hud[2]));};
+            const auto y=[&](float v) {return int(std::lround(hud[1]*(v-240)+240-240*hud[3]));};
+            const auto put=[](u8* w,int lo,int hi) {
+                const u32 value=(u32(std::clamp(lo+342,0,0x7FF))|u32(std::clamp(hi+342,0,0x7FF))<<12)&0xFFFFFF;
+                w[2]=u8(value>>16);w[3]=u8(value>>8);w[4]=u8(value);
+            };
+            put(o,y(top),x(left));put(o+5,y(bottom)-1,x(right)-1);
+        }
+        if(vrhost::firstPerson() && !eye->cinematic && b.playerAnchor.valid && sceneView<b.views.size()) {
+            auto anchor=b.playerAnchor;
+            if(a && a->playerAnchor.valid && a->mapId==b.mapId && !b.cut) {
+                float distance2=0;
+                for(int k=0;k<3;++k) {const float d=anchor.position[k]-a->playerAnchor.position[k];distance2+=d*d;}
+                if(distance2<250.0f*250.0f) {
+                    for(int k=0;k<3;++k) anchor.position[k]=a->playerAnchor.position[k]+alpha*(anchor.position[k]-a->playerAnchor.position[k]);
+                    const float delta=std::remainder(anchor.yaw-a->playerAnchor.yaw,6.283185307f);
+                    anchor.yaw=a->playerAnchor.yaw+alpha*delta;
+                }
+            }
+            anchor.yaw=vrhost::firstPersonHeading(anchor.yaw,anchor.actorId);
+            vr::Matrix view{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+            const M34* source=&b.views[sceneView];
+            if(a && sceneView<sViewToA.size() && sViewToA[sceneView]>=0)
+                if(const auto* pair=viewPair(*a,u16(sViewToA[sceneView]),b,sceneView,alpha);pair && pair->ok) source=&pair->vt;
+            std::copy(source->begin(),source->end(),view.begin());
+            vrhost::setMovementView(view);
+            camera.transform=vr::eyeFromPlayer(camera.transform,view,anchor,vrhost::worldUnitsPerMetre(),vrhost::firstPersonEyeHeight(),vrhost::firstPersonEyeForward());
+            // Rigid transform with uniform 1/100 scale, used by shadow receivers.
+            const float units=vrhost::worldUnitsPerMetre();
+            const float scale2=1.0f/(units*units);
+            for(int r=0;r<3;++r) {
+                for(int c=0;c<3;++c) camera.inverse[r*4+c]=camera.transform[c*4+r]/scale2;
+                camera.inverse[r*4+3]=-(camera.inverse[r*4]*camera.transform[3]+camera.inverse[r*4+1]*camera.transform[7]+camera.inverse[r*4+2]*camera.transform[11]);
+            }
+        }
+        // A reflection/sub-camera may have an untagged projection of its own.
+        // Change a projection only when main-view geometry actually consumes it;
+        // otherwise its authored matrices and projection would disagree.
+        std::unordered_set<u32> mainWorldProjections;
+        if(!eye->cinematic)for(const Patch& p:b.patches)
+            if(p.kind==Kind::PosMtx && p.role==0 && (!p.ownCamera || expandedSubview) && p.view==sceneView && p.projPatch>=0 &&
+               (p.bundle>=b.bundlePass.size()||b.bundlePass[p.bundle]==0))
+                mainWorldProjections.insert(u32(p.projPatch));
+        const auto& transform = eye->transform;
+        const float scale = std::sqrt(transform[0]*transform[0]+transform[4]*transform[4]+transform[8]*transform[8]);
+        for (const Patch& p : b.patches) {
+            // Shadow maps keep the authored light camera in each eye; receiver
+            // texture matrices below compensate the eye's model-view transform.
+            if(p.bundle<b.bundlePass.size() && b.bundlePass[p.bundle]==1) continue;
+            if (p.kind == Kind::Projection && p.count == 6 &&
+                sReplay[p.offset+27] == GX_ORTHOGRAPHIC && (!eye->cinematic || dialogueProjections.count(u32(&p-b.patches.data()))) &&
+                mappedHud(u32(&p-b.patches.data())) &&
+                (p.bundle >= b.bundlePass.size() || b.bundlePass[p.bundle] == 0)) {
+                // Keep text, borders and clip rectangles on the same speech plane.
+                const auto hud=projectionHud;
+                for(int axis=0;axis<2;++axis) {
+                    const unsigned base=p.offset+axis*8;
+                    storeBE(sReplay.data()+base,loadBE(sReplay.data()+base)*hud[axis]);
+                    storeBE(sReplay.data()+base+4,loadBE(sReplay.data()+base+4)*hud[axis]+hud[axis+2]);
+                }
+                continue;
+            }
+            const bool mapGeometry=b.mapScreen && (p.ownCamera || p.cat==TagCat::World || p.cat==TagCat::Object);
+            if ((p.ownCamera && !eye->cinematic && !(expandedSubview && p.view==sceneView)) || (p.role == 2 && !mapGeometry)) continue;
+            if(mapGeometry && p.role==2 && p.kind!=Kind::PosMtx && p.kind!=Kind::Projection) continue;
+            if (p.kind == Kind::Projection && p.count == 6 && sReplay[p.offset+27] == GX_PERSPECTIVE) {
+                if(!eye->cinematic && !mapGeometry && !mainWorldProjections.count(u32(&p-b.patches.data())))continue;
+                if(eye->cinematic) {
+                    const float fx=loadBE(sReplay.data()+p.offset);
+                    const float offset=loadBE(sReplay.data()+p.offset+4);
+                    storeBE(sReplay.data()+p.offset+4,vr::cinematicProjectionOffset(fx,offset,eye->eyeOffset,stereoFocus));
+                } else {
+                    const int elements[]{0,2,5,6,10,11};
+                    for (int k=0;k<6;++k) storeBE(sReplay.data()+p.offset+4*k,eye->projection[elements[k]]);
+                }
+                ++transformedProjections;
+                continue;
+            }
+            if (!eye->cinematic && p.view != sceneView) continue;
+            if (p.kind == Kind::PosMtx && p.count == 12 && (p.role == 0 || mapGeometry)) {
+                vr::Matrix matrix{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1};
+                for (int k=0;k<12;++k) matrix[k]=loadBE(sReplay.data()+p.offset+4*k);
+                auto modelTransform=transform;
+                if(mapGeometry && p.role==2) {
+                    // Orthographic map geometry needs a depth shear for stereo;
+                    // its 2D labels retain their original screen coordinates.
+                    modelTransform[2]=-eye->eyeOffset/stereoFocus;
+                }
+                const auto result=vr::multiply(modelTransform,matrix);
+                for (int k=0;k<12;++k) storeBE(sReplay.data()+p.offset+4*k,result[k]);
+                ++transformedPositions;
+            } else if (p.kind == Kind::NrmMtx && p.count == 9) {
+                float matrix[9],result[9]{};
+                for (int k=0;k<9;++k) matrix[k]=loadBE(sReplay.data()+p.offset+4*k);
+                for (int r=0;r<3;++r) for (int c=0;c<3;++c) for (int k=0;k<3;++k)
+                    result[r*3+c]+=transform[r*4+k]/scale*matrix[k*3+c];
+                for (int k=0;k<9;++k) storeBE(sReplay.data()+p.offset+4*k,result[k]);
+            } else if (p.kind == Kind::Light && p.count == 6) {
+                float values[6],result[6]{};
+                for(int k=0;k<6;++k) values[k]=loadBE(sReplay.data()+p.offset+4*k);
+                for(int r=0;r<3;++r) {
+                    result[r]=transform[r*4+3];
+                    for(int k=0;k<3;++k) {
+                        result[r]+=transform[r*4+k]*values[k];
+                        result[r+3]+=transform[r*4+k]/scale*values[k+3];
+                    }
+                }
+                for(int k=0;k<6;++k) storeBE(sReplay.data()+p.offset+4*k,result[k]);
+                if(p.offset>=24) {
+                    storeBE(sReplay.data()+p.offset-8,loadBE(sReplay.data()+p.offset-8)/scale);
+                    storeBE(sReplay.data()+p.offset-4,loadBE(sReplay.data()+p.offset-4)/(scale*scale));
+                }
+            } else if (p.role == 1 && p.count == 12) {
+                vr::Matrix matrix{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1};
+                for(int k=0;k<12;++k) matrix[k]=loadBE(sReplay.data()+p.offset+4*k);
+                const auto result=vr::shadowReceiverForEye(matrix,eye->inverse,p.slot>=64);
+                for(int k=0;k<12;++k) storeBE(sReplay.data()+p.offset+4*k,result[k]);
+            }
+        }
+        static unsigned reports=0;
+        if (transformedPositions && reports++<4)
+            log("[vr] tape %llu main view %u: transformed %u positions and %u projections",static_cast<unsigned long long>(b.seq),b.mainView,transformedPositions,transformedProjections);
+    }
     // Test aid LM_SPRAY_LOG=<file>: per replay, every element-stream drop (tumbler model matrices) and
     // particle point (single-vertex blocks of particles) with its key, how it was shown (b: paired
     // and blended, n: no partner, s: born moving along its step) and its place in the world as shown
@@ -5237,12 +5704,53 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
     // each tape is saved after it is replayed (four slots: LM_INTERP_TEST replays tape N before the
     // late replays of N-1); a tape whose predecessor was never replayed (dropped, or drawn directly
     // since reset()) starts from the current state.
-    const bool haveBStart = b.seq > 1 && sEndSeq[(b.seq - 1) & 3] == b.seq - 1;
-    if (haveBStart) GXRestoreStateAurora(u8((b.seq - 1) & 3));
+    if(!hudProjectionMoves.empty()) {
+        struct Insert {u32 at;std::vector<u8> command;};
+        std::vector<Insert> inserts;
+        for(const auto& move:hudProjectionMoves){
+            const Patch& projection=b.patches[move.projection];
+            if(projection.offset<5 || projection.offset+28>sReplay.size())continue;
+            std::array<u8,33> original;
+            std::copy_n(sReplay.data()+projection.offset-5,33,original.data());
+            if(original[0]!=0x10 || original[3]!=0x10 || original[4]!=0x20)continue;
+            auto shifted=original;
+            storeBE(shifted.data()+9,loadBE(shifted.data()+9)+move.dx);
+            storeBE(shifted.data()+17,loadBE(shifted.data()+17)+move.dy);
+            // Each ordinary HUD draw owns a full output clip. A small native
+            // LCD scissor may otherwise survive until health/Boo glyphs, even
+            // when their full-view reset was outside a captured text group.
+            // Speech/map draws do not enter this relocation list.
+            const auto scoped=[&](const std::array<u8,33>& projection){
+                std::vector<u8> out(projection.begin(),projection.end());
+                // Preserve the device LCD mask: off-screen treasure pages are
+                // drawn beside its visible money page and must remain clipped.
+                if(move.device)return out;
+                const u8 fullClip[]{0x61,0x20,0x15,0x61,0x56,0x61,0x21,0x3D,0x53,0x35};
+                out.insert(out.end(),std::begin(fullClip),std::end(fullClip));return out;
+            };
+            inserts.push_back({move.begin,scoped(shifted)});inserts.push_back({move.end,scoped(original)});
+        }
+        std::stable_sort(inserts.begin(),inserts.end(),[](const Insert& a,const Insert& c){return a.at<c.at;});
+        std::vector<u8> relocated;relocated.reserve(sReplay.size()+inserts.size()*43);
+        u32 at=0;
+        for(const auto& insert:inserts){if(insert.at<at||insert.at>sReplay.size())continue;
+            relocated.insert(relocated.end(),sReplay.begin()+at,sReplay.begin()+insert.at);
+            relocated.insert(relocated.end(),insert.command.begin(),insert.command.end());at=insert.at;}
+        relocated.insert(relocated.end(),sReplay.begin()+at,sReplay.end());sReplay.swap(relocated);
+    }
+    const u8 eyeBase=vrhost::rendering() && vrhost::eyeIndex()==1 ? 8 : 0;
+    const u8 startSlot=u8(eyeBase+((b.seq-1)&3)),endSlot=u8(eyeBase+(b.seq&3));
+    const bool haveBStart = b.seq > 1 && sEndSeq[startSlot] == b.seq - 1;
+    if (haveBStart) GXRestoreStateAurora(startSlot);
     // EFB copies made by this replay go into this tape's copy generation, so they don't replace the
     // previous frame's copies that this frame's early draws may still read (Aurora patch 0028).
     // Only the first replay of a tape reads its copies back into memory (bit 6 on the others).
-    GXSetCopyGenerationAurora(u8((b.seq & 3) | 0x80 | (b.replayed.exchange(true) ? 0x40 : 0)));
+    GXSetCopyGenerationAurora(u8((b.seq & 3) | (eyeBase?4:0) | 0x80 | (b.replayed.exchange(true) ? 0x40 : 0)));
+    if(vrhost::rendering()) {
+        static bool reported[2]{};
+        const unsigned eye=vrhost::eyeIndex();
+        if(!reported[eye]) {reported[eye]=true;log("[vr] independent replay eye %u state slot %u copy generation %u",eye,endSlot,unsigned((b.seq&3)|(eyeBase?4:0)));}
+    }
     probeBeforeReplay(a, b, alpha, sReplay);
     {
         std::lock_guard lk(sReplayRecM);
@@ -5250,8 +5758,8 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             ReplayRec{AuroraFifoStreamPos(), u32(sReplay.size()), b.seq, b.gameFrame, b.sites};
     }
     AuroraReplay(sReplay.data(), u32(sReplay.size()));
-    GXSaveStateAurora(u8(b.seq & 3));
-    sEndSeq[b.seq & 3] = b.seq;
+    GXSaveStateAurora(endSlot);
+    sEndSeq[endSlot] = b.seq;
 }
 
 // --- LM_INTERP_TEST host side ---
@@ -5422,6 +5930,10 @@ bool testReplay() {
 }
 
 }  // namespace
+
+void noteVrPlayer(float x,float y,float z,float facingX,float facingZ,bool valid) {
+    sVrPlayer={{x,y,z},std::atan2(-facingX,-facingZ),valid && std::isfinite(x) && std::isfinite(y) && std::isfinite(z) && std::isfinite(facingX) && std::isfinite(facingZ) && facingX*facingX+facingZ*facingZ>0.01f};
+}
 
 // --- presentation clock (docs/INTERPOLATION.md "Pacing") ---------------------------------------
 // Each tape is placed on the game's own timeline: its frame stamp (fields of 1001/60000 s at its
@@ -5608,6 +6120,14 @@ int pace(const std::vector<std::shared_ptr<const Tape>>& q, Clock::time_point no
 }
 
 PresentInfo sLastPresent;
+std::shared_ptr<const Tape> sStereoA, sStereoB;
+float sStereoAlpha = 1;
+
+bool replayStereoEye() {
+    if (!sStereoB) return false;
+    replayPair(sStereoA.get(), *sStereoB, sStereoAlpha, nullptr);
+    return true;
+}
 u64 sStatsSeq = 0;  // newest tape at the start of the stats window: game frames made = newest - this
 PresentInfo lastPresent() { return sLastPresent; }
 
@@ -5682,7 +6202,10 @@ bool replay(bool final) {
         presentDump = efbcopy::namedDumpTarget(nm);
     }
     sSprayPresent = sLastPresent.present;
-    replayPair(final ? nullptr : a.get(), *b, alpha, presentDump);
+    sStereoA = final ? nullptr : a;
+    sStereoB = b;
+    sStereoAlpha = alpha;
+    replayPair(sStereoA.get(), *b, alpha, presentDump);
     probeFill(a, b);
     if (sTrackOut && !final && (!a || b->cut || b->pairedWith != a.get()))  // the whole picture at b (a camera cut, a gap)
         trackLine("HC %u %llu f%u %.3f %s\n", sLastPresent.present, (unsigned long long)b->seq, b->gameFrame, alpha,
@@ -5840,6 +6363,7 @@ void hostMark(int phase) {
 
 void reset() {
     std::lock_guard lk(sM);
+    sStereoA.reset(); sStereoB.reset();
     // Frames are drawn directly from now on: the saved replay states are out of date.
     std::fill(std::begin(sEndSeq), std::end(sEndSeq), 0);
     // The FIFO may still be reading the last replay's array copies.

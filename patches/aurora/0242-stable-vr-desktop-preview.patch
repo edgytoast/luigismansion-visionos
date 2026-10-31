@@ -1,0 +1,66 @@
+--- a/lib/aurora.cpp
++++ b/lib/aurora.cpp
+@@ -556,7 +556,7 @@
+   return true;
+ }
+ 
+-void end_frame() noexcept {
++void end_frame(bool presentToWindow = true) noexcept {
+   ZoneScoped;
+ #ifdef AURORA_ENABLE_GX
+   const activity::Scope busy{activity::Thread::Host, "aurora_end_frame"};
+@@ -581,7 +581,7 @@
+   }
+ #endif
+ 
+-  gfx::end_frame([rmlBindGroup = std::move(rmlBindGroup), rmlOverlay, viewport,
++  gfx::end_frame([presentToWindow, rmlBindGroup = std::move(rmlBindGroup), rmlOverlay, viewport,
+                   imguiDrawData = std::move(imguiDrawData),
+                   timingFrame = present_timing::g_counter.load(std::memory_order_acquire)](
+                      wgpu::CommandEncoder& encoder, std::vector<gfx::AfterSubmitCallback> afterSubmitCallbacks) {
+@@ -614,7 +614,7 @@
+     auto surfaceStatus = wgpu::SurfaceGetCurrentTextureStatus::Error;
+     {
+       window::SurfaceLock surfaceLock;
+-      if (window::is_presentable() && g_surface) {
++      if (presentToWindow && window::is_presentable() && g_surface) {
+         ZoneScopedN("Acquire texture");
+         wgpu::SurfaceTexture surfaceTexture;
+         const activity::Scope acquire{activity::Thread::RenderWorker,
+@@ -704,7 +704,7 @@
+         imgui::render(pass, imguiDrawData);
+         pass.End();
+       }
+-    } else {
++    } else if (presentToWindow) {
+       Log.info("Skipping present; window not presentable");
+     }
+     webgpu::gpu_prof::frame_end(encoder);
+@@ -734,7 +734,7 @@
+         Log.warn("Surface present failed");
+         webgpu::release_surface();
+       }
+-    } else if (g_surface) {
++    } else if (presentToWindow && g_surface) {
+       present_timing::frame_presented(timingFrame, timingSubmitNs, 0);
+       switch (surfaceStatus) {
+       case wgpu::SurfaceGetCurrentTextureStatus::Timeout:
+@@ -854,6 +854,7 @@
+ }
+ #endif
+ void aurora_end_frame() { aurora::end_frame(); }
++void aurora_end_frame_offscreen() { aurora::end_frame(false); }
+ SDL_Window* aurora_get_window() { return aurora::window::get_sdl_window(); }
+ AuroraWindowSize aurora_get_window_size() {
+   return aurora::window::get_sdl_window() != nullptr ? aurora::window::get_window_size() : AuroraWindowSize{};
+--- a/include/aurora/aurora.h
++++ b/include/aurora/aurora.h
+@@ -131,6 +131,8 @@
+ const AuroraEvent* aurora_update();
+ bool aurora_begin_frame();
+ void aurora_end_frame();
++/** Finish GPU work and readbacks without presenting to the desktop surface. */
++void aurora_end_frame_offscreen();
+ 
+ void aurora_set_log_level(AuroraLogLevel level);
+ void aurora_set_pause_on_focus_lost(bool value);

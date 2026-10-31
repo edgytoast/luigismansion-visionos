@@ -130,11 +130,8 @@
 800BFE60 __dt__Q24Koga8ToolDataFv -
 800BFEAC attach__Q24Koga8ToolDataFPCQ34Koga8ToolData8JMapData -
 800BFEC8 reset__Q24Koga8ToolDataFv -
-800BFED4 getValue__Q24Koga8ToolDataCFiPCcPUl -
-800BFF70 getValue__Q24Koga8ToolDataCFiPCcPl -
 800BFFF8 getValue__Q24Koga8ToolDataCFiPCcPUc -
 800C0098 getValue__Q24Koga8ToolDataCFiPCcPPCc -
-800C0120 getValue__Q24Koga8ToolDataCFiPCcPf -
 800C01A8 searchItemInfo__Q24Koga8ToolDataCFPCc -
 800C0234 findEntryByValue__Q24Koga8ToolDataFiUli -
 800C02A4 findEntryByValue__Q24Koga8ToolDataFiPCci -
@@ -248,7 +245,6 @@
 800E7ED4 vt_0C__Q24Koga9EnManagerFP11ToolDataRef -
 800E828C vt_10__Q24Koga9EnManagerFP11ToolDataRef -
 800E84E8 vt_14__Q24Koga9EnManagerFP11ToolDataRefPc -
-800E8818 findLuigiAppearIndex__Q24Koga9EnManagerFPQ24Koga8ToolDataUl -
 800E9408 __ct__13unkEnManager2Fv -
 800E9414 __ct__13unkEnManager2FRC11ToolDataRef -
 800E94F4 getCreateName__13unkEnManager2Fv -
@@ -3314,6 +3310,7 @@
 8003FE30 fn_8003E7B0 hook
 80011D30 fn_80011150 hook
 800213EC fn_80020654 hook
+801489B8 fn_80145534 hook
 8000CA14 fn_8000BB98 hook
 800602D8 fn_8005D8CC hook
 8006070C fn_8005DCA0 hook
@@ -3361,6 +3358,13 @@
 800167BC fn_80015BDC hook
 801B4270 draw__7J2DPaneFiiPC14J2DGrafContextb hook
 801D2A30 free__10JKRExpHeapFPv hook
+80022C84 fn_80021DDC hook
+8007A290 fn_80077408 hook
+8007A29C fn_80077414 hook
+80061258 fn_8005E7FC hook
+8008D49C fn_8008A504 hook
+800C0CBC fn_800BD870 hook
+8006140C fn_8005E9B0 hook
 801D22A8 alloc__10JKRExpHeapFUli hook
 8015A5D8 fn_80157030 hook
 80153B04 fn_8015066C hook
@@ -3436,7 +3440,6 @@
 800ECB7C fn_800E9750__Q24Koga9EnManagerFl -
 800ECBA8 fn_800E977C__Q24Koga9EnManagerFll -
 801465F8 fn_80143174 -
-801489B8 fn_80145534 -
 801683F4 fn_80164F5C -
 8018A608 fn_8018712C -
 8018BC20 fn_80188760 -
@@ -3451,3 +3454,14 @@
 801CADE0 fn_801C7814 -
 801CDD64 fn_801CA7A4 -
 801CFE18 fn_801CC844 -
+800E8818 findLuigiAppearIndex__Q24Koga9EnManagerFPQ24Koga8ToolDataUl hook
+800C0120 getValue__Q24Koga8ToolDataCFiPCcPf hook
+800BFED4 getValue__Q24Koga8ToolDataCFiPCcPUl hook
+800BFF70 getValue__Q24Koga8ToolDataCFiPCcPl hook
+8018A6F8 fn_8018721C hook
+80063A68 fn_80060C88 hook
+80063B24 fn_80060D44 hook
+
+800591EC fn_8005724C hook
+
+80052C00 palfn_80052C00 hook

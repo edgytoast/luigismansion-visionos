@@ -25,7 +25,8 @@ foreach ($p in @("$env:ProgramFiles\CMake\bin", "$env:LOCALAPPDATA\Microsoft\Win
 
 Push-Location $root
 try {
-    if ($Configure -or $Dol -or -not (Test-Path "build/$Preset/build.ninja")) {
+    $buildRoot = if ($Preset -eq "windows-vr-integration") { "build/windows-clang" } else { "build/$Preset" }
+    if ($Configure -or $Dol -or -not (Test-Path "$buildRoot/build.ninja")) {
         if ($Dol) { cmake --preset $Preset "-DLM_DOL=$($Dol -replace '\\', '/')" } else { cmake --preset $Preset }
         if ($LASTEXITCODE) { throw "configure failed" }
     }

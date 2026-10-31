@@ -1,3 +1,4 @@
+#include "recomp/vr_avatar_guest.h"
 // World lights (F1 > Visuals > Enhanced lighting > World lights; docs/RENDERING.md,
 // "Enhanced lighting > World lights").
 //
@@ -367,8 +368,38 @@ bool roomLit(int room) {
 
 void noteResource(const char* path, u32 data) {
     if (sLog >= 2 && path && std::strstr(path, "info")) log("[worldlight] resource %s -> %08X", path, data);
+    // Both archive lookup overloads call this: retail effects need not use the
+    // typed lookup used by the debug particle menu.
+    if(!path || !guestPtr(data)) return;
+    const size_t len=strnlen(path,128);
+    if(len>=128 || len<5 || std::strcmp(path+len-4,".pcr")) return;
+    std::string base(path,len-4);
+    if(const auto slash=base.rfind('/');slash!=std::string::npos) base.erase(0,slash+1);
+    sRes[data]={base,kindFor(base)};
 }
 
+HiddenPlayerParticles::HiddenPlayerParticles() {
+    static const bool test=std::getenv("LM_VR_COLD_BREATH_TEST")!=nullptr;
+    if(!vravatar::hiddenKeyGhostPlayer()&&!test)return;
+    // Cold breath uses the older particle manager, not LPS .pcr emitters.
+    // Its init handler copies a member-function pointer to group +0x178.
+    // Native draw fn_8012CB74 draws only groups with byte +0x3D == 1.
+    const u32 manager=VOFF(0x803D7F00,0x803C54C0);
+    const u32 sentinel=rd32(manager+0x3D8);
+    const u32 handler=VOFF(0x8012A904,0x8012DD80);
+    unsigned count=0;
+    for(u32 group=guestPtr(sentinel+0x143)?rd32(sentinel+0x140):0;
+        guestPtr(group)&&guestPtr(group+0x1AF)&&group!=sentinel&&count++<256;
+        group=rd32(group+0x140)) {
+        if(rd32(group+0x178)!=handler)continue;
+        const u8 shown=rd8(group+0x3D);saved_.push_back({group,shown});wr8(group+0x3D,0);
+        static unsigned reports=0;if(reports++<3)
+            log("[vr cold breath] legacy group %08X handler %08X draw %u -> 0",group,handler,unsigned(shown));
+    }
+}
+HiddenPlayerParticles::~HiddenPlayerParticles() {
+    for(auto it=saved_.rbegin();it!=saved_.rend();++it)wr8(it->first+0x3D,it->second);
+}
 void onMainView(Ctx& c) {
     sFrame++;
     sCtx = &c;
@@ -714,6 +745,7 @@ HLE(getResource__10JKRArchiveFUlPCc) {
     if (!guestPtr(namePtr) || !guestPtr(c.r[3])) return;
     const char* name = gstr(namePtr);
     const size_t len = strnlen(name, 64);
+    vravatar::notePlayerSceneResource(name);
     noteResource(name, c.r[3]);
     if (len > 4 && !std::strcmp(name + len - 4, ".pcr")) {
         std::string base(name, len - 4);
@@ -727,7 +759,10 @@ HLE(fn_8015FE9C) {
     const u32 res = c.r[4];
     const u32 lr = c.lr, sp = c.r[1];
     callOriginal(c, "fn_8015FE9C");
-    if (guestPtr(c.r[3])) sEmitterRes[c.r[3]] = res, sFlame.erase(c.r[3]);  // pooled emitters are reused
+    if (guestPtr(c.r[3])) {
+        sEmitterRes[c.r[3]] = res;sFlame.erase(c.r[3]); // pooled emitters are reused
+        if(std::strcmp(emitterName(c.r[3]),"key_get")==0) vravatar::notePickup();
+    }
     if (sLog >= 3 && guestPtr(c.r[3])) {
         u32 s = sp, chain[4] = {};
         for (int i = 0; i < 4 && guestPtr(s); i++) chain[i] = rd32((s = rd32(s)) + 4);

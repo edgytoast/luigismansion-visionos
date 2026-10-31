@@ -7,6 +7,9 @@
 #include "recomp/hle.h"
 #include "recomp/mirror_world.h"
 #include "recomp/skip.h"
+#include "recomp/interp.h"
+#include "recomp/vr_host.h"
+#include "recomp/vr_avatar_guest.h"
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
 
@@ -331,6 +334,19 @@ HLE(fn_800112F8) {
         if (p1 && p2) wr16(p2 + 0x792, u16((rd16(p1 + 0x792) & ~1u) | (rd16(p2 + 0x792) & 1u)));
     }
     callOriginal(c, "fn_800112F8");
+    if(vrhost::enabled() || vravatar::diagnosticEnabled()) {
+        const u32 p=player(c,0);
+        const bool valid=gu::inMem1(p) && gu::inMem1(p+0xF53);
+        vravatar::setPlayer(valid?p:0);
+        vravatar::worldFrame(c);
+        const auto context=(std::uint64_t(valid?p:0)<<32)|(std::uint64_t(rd32(kCurMapNo))<<8)|rd8(kViewPlayers+0xC);
+        // Bit 4 is the game's existing Poltergust ownership flag. Key availability
+        // remains off until its room-specific inventory adapter is verified.
+        vravatar::setEquipmentContext(context);
+        vrhost::setEquipmentSnapshot(context,valid,valid && (rd16(p+0x792)&4),false,valid && (rd16(p+0x792)&8));
+        if(valid) interp::noteVrPlayer(gu::rdf(p+0x44),gu::rdf(p+0x48),gu::rdf(p+0x4C),gu::rdf(p+0xF48),gu::rdf(p+0xF50),true);
+        else interp::noteVrPlayer(0,0,0,0,0,false);
+    }
     cooptest::frame(c);
     if (!active()) return;
     static const bool sDump = envFlag("LM_COOP_DUMP");
@@ -601,6 +617,11 @@ void drawP2Meter(Ctx& c, bool split) {
 }  // namespace
 
 HLE(fn_8003E7B0) {
+    if(vrhost::enabled()) {
+        interp::TagScope hud(interp::TagCat::Hud,0x8003E7B0u);
+        callOriginal(c,"fn_8003E7B0");
+        return;
+    }
     mirror::beforeViewHud(c, c.r[3]);  // mirrored 2-player views: the scene copy (mirror_world.h)
     if (!fixes() || sGbhView) return callOriginal(c, "fn_8003E7B0");
     const u32 view = c.r[3];
@@ -630,7 +651,36 @@ int gbhShift() { return sGbhShift; }
 HLE(fn_800850B4) {
     const u32 prev = sLightOwner;
     sLightOwner = gu::inMem1(c.r[4]) ? rd32(c.r[4] + 4) : 0;
+    // Native ghost tests run inside this call; override the input vector for
+    // the duration rather than moving only the rendered beam.
+    const u32 params=c.r[4];
+    const u32 axis=gu::inMem1(params+15)?rd32(params+0xC):0;
+    const u32 light=c.r[3],origin=gu::inMem1(params+11)?rd32(params+8):0;
+    const bool beltLight=vrhost::beltMode()&&!skip::cinematicCamera()&&!vravatar::pickupPresentation()&&!vravatar::reactionPresentation()&&sLightOwner==vravatar::captureAnchor().actorId&&gu::inMem1(params);
+    const u8 enabled=gu::inMem1(params)?rd8(params):0;
+    unsigned holdingHand=1;float holdingTrigger=0;
+    const bool activate=vrhost::heldEquipmentControl(holdingHand,holdingTrigger,vr::GrabKind::Flashlight)&&holdingTrigger>=0.65f;
+    const bool testLight=vravatar::diagnosticEquipment()&&sLightOwner==vravatar::captureAnchor().actorId;
+    if(beltLight||testLight)wr8(params,(activate||testLight)&&vravatar::toolVectorValid(axis)&&vravatar::toolVectorValid(origin)?1:0);
+    vr::ToolTarget target;vr::Vec3 savedAxis{},savedOrigin{};
+    const bool validRay=vravatar::toolVectorValid(axis)&&vravatar::toolVectorValid(origin);
+    const vr::Vec3 nativeOrigin=validRay?vr::Vec3{gu::rdf(origin),gu::rdf(origin+4),gu::rdf(origin+8)}:vr::Vec3{};
+    const vr::Vec3 nativeAxis=validRay?vr::Vec3{gu::rdf(axis),gu::rdf(axis+4),gu::rdf(axis+8)}:vr::Vec3{};
+    const bool aimed=gu::inMem1(params)&&rd8(params)!=0&&validRay&&vravatar::toolAim(sLightOwner,target,&nativeOrigin,&nativeAxis,vr::GrabKind::Flashlight);
+    const bool positioned=aimed&&target.tracked&&vravatar::toolVectorValid(origin);
+    if(aimed)for(unsigned k=0;k<3;++k){savedAxis[k]=gu::rdf(axis+4*k);gu::wrf(axis+4*k,target.direction[k]);}
+    if(positioned)for(unsigned k=0;k<3;++k){savedOrigin[k]=gu::rdf(origin+4*k);gu::wrf(origin+4*k,target.origin[k]);}
     callOriginal(c, "fn_800850B4");
+    if(positioned && vravatar::diagnosticEnabled() && gu::inMem1(light+0x2F)) {
+        static unsigned reports=0;
+        if(reports++<3) {
+            float error=0;for(unsigned k=0;k<3;++k){error=std::max(error,std::fabs(gu::rdf(light+0xC+4*k)-target.origin[k]));error=std::max(error,std::fabs(gu::rdf(light+0x24+4*k)-target.direction[k]));}
+            log("[vr tools test] native flashlight emission residual %.6f",error);
+        }
+    }
+    if(positioned)for(unsigned k=0;k<3;++k)gu::wrf(origin+4*k,savedOrigin[k]);
+    if(aimed)for(unsigned k=0;k<3;++k)gu::wrf(axis+4*k,savedAxis[k]);
+    if(beltLight||testLight)wr8(params,enabled);
     sLightOwner = prev;
 }
 
@@ -767,6 +817,7 @@ HLE(fn_80143174) {
 // (fn_8012BF4C, fn_800AD39C(0)); a copy is filled the same way for player 2.
 HLE(fn_80145534) {
     callOriginal(c, "fn_80145534");
+    vravatar::aimSuction(rd32(kSuction+0xE0));
     if (!fixes() || off(0x100) || !player(c, 1)) return;
     if (!sP2Nozzle) {
         sP2Nozzle = hleAlloc(0x60, 8);
@@ -828,3 +879,19 @@ void onGhostMessage(Ctx& c) {
 }
 
 }  // namespace recomp::coop
+
+namespace recomp {
+// Native GBH camera update; keep its transitions/scanning logic, then provide
+// the tracked camera eye, look target and up before the view is constructed.
+HLE(fn_80021DDC) {
+    callOriginal(c,"fn_80021DDC");
+    vravatar::aimGameBoyCamera(rd32(VA(0x804D8240)));
+}
+}
+
+namespace recomp {
+// Native position/direction getters feed both the Poltergust part and its
+// effects. Return owned tracked vectors; leave authored model data untouched.
+HLE(fn_80077408) {const u32 source=c.r[3];callOriginal(c,"fn_80077408");c.r[3]=vravatar::heldToolVector(source,false,c.r[3]);}
+HLE(fn_80077414) {const u32 source=c.r[3];callOriginal(c,"fn_80077414");c.r[3]=vravatar::heldToolVector(source,true,c.r[3]);}
+}

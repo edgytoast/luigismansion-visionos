@@ -1,0 +1,48 @@
+--- a/lib/webgpu/gpu.hpp
++++ b/lib/webgpu/gpu.hpp
+@@ -77,6 +77,8 @@
+ const TextureWithSampler& present_source() noexcept;
+ TextureWithSampler& vr_present_target() noexcept;
+ const TextureWithSampler& vr_present_source() noexcept;
++TextureWithSampler& vr_overlay_target() noexcept;
++void set_vr_overlay_separate(bool separate) noexcept;
+ wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source);
+ void set_resampler(AuroraSampler sampler) noexcept;
+ AuroraSampler get_resampler() noexcept;
+--- a/lib/webgpu/gpu.cpp
++++ b/lib/webgpu/gpu.cpp
+@@ -358,7 +358,16 @@
+     target = create_render_texture(source.size.width, source.size.height, false);
+   return target;
+ }
+-const TextureWithSampler& vr_present_source() noexcept { return vr_present_target(); }
++static bool sVrOverlaySeparate=false;
++void set_vr_overlay_separate(bool separate) noexcept { sVrOverlaySeparate=separate; }
++TextureWithSampler& vr_overlay_target() noexcept {
++  static TextureWithSampler target;
++  const auto& source=present_source();
++  if(!target.view || target.size.width!=source.size.width || target.size.height!=source.size.height || target.format!=g_graphicsConfig.surfaceConfiguration.format)
++    target=create_render_texture(source.size.width,source.size.height,false);
++  return target;
++}
++const TextureWithSampler& vr_present_source() noexcept { return sVrOverlaySeparate?present_source():vr_present_target(); }
+ 
+ void set_resampler(AuroraSampler sampler) noexcept {
+   switch (sampler) {
+--- a/lib/aurora.cpp
++++ b/lib/aurora.cpp
+@@ -611,6 +611,14 @@
+       pass.Draw(3);
+       imgui::render(pass, imguiDrawData, float(target.size.width), float(target.size.height));
+       pass.End();
++      // A transparent UI-only image can be placed over stereo gameplay by XR.
++      const auto& overlay=webgpu::vr_overlay_target();
++      const wgpu::RenderPassColorAttachment uiAttachment{
++          .view=overlay.view,.loadOp=wgpu::LoadOp::Clear,.storeOp=wgpu::StoreOp::Store,.clearValue={0,0,0,0}};
++      const wgpu::RenderPassDescriptor uiDescriptor{.label="VR separate settings overlay",.colorAttachmentCount=1,.colorAttachments=&uiAttachment};
++      const auto uiPass=encoder.BeginRenderPass(&uiDescriptor);
++      imgui::render(uiPass,imguiDrawData,float(overlay.size.width),float(overlay.size.height));
++      uiPass.End();
+     }
+     if (!sLateSubmit) {
+       ZoneScopedN("Frame Submit");

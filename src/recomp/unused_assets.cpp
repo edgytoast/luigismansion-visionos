@@ -5,6 +5,7 @@
 #include "recomp/hle.h"
 #include "recomp/unused2.h"
 #include "recomp/world_lights.h"
+#include "recomp/vr_avatar_guest.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
 
@@ -261,6 +262,7 @@ HLE(fn_8002F4DC) {
 // JKRArchive::getResource(const char*): redirects for the options above.
 HLE(getResource__10JKRArchiveFPCc) {
     const char* path = gstr(c.r[4]);
+    vravatar::notePlayerSceneResource(path);
     if (sSkyLoading) {
         static u32 sBmd = 0, sBtk = 0;
         if (!sBmd) sBmd = guestString("/iwamoto/vrbox/vrball01.bmd"), sBtk = guestString("/iwamoto/vrbox/vrball01.btk");

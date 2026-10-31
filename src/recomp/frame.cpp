@@ -11,6 +11,7 @@
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
 #include "recomp/skip.h"
+#include "recomp/vr_host.h"
 
 #include <aurora/aurora.h>
 #include <SDL3/SDL_timer.h>
@@ -157,6 +158,7 @@ float displayRefreshHz() {
 }
 
 int targetFps() {
+    if (vrhost::enabled()) return 90; // enables taped replay; xrWaitFrame owns headset pacing
     const auto& v = port::settings().video;
     int fps = v.targetFps;
     if (v.unlimitedFps) return port::kMaxFps;

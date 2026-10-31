@@ -33,7 +33,7 @@ void callOriginal(Ctx& c, const char* name);
 u32 guestCall(Ctx& c, u32 fn, u32 a0 = 0, u32 a1 = 0, u32 a2 = 0, u32 a3 = 0);
 
 // Bump allocator for HLE-owned guest objects (thread structs, stacks, FIFO objects),
-// placed above the game arena where retail keeps the FST.
+// placed outside MEM1 in the host address window (runtime.h: kHleHeapBegin).
 u32 hleAlloc(u32 size, u32 align = 32);
 
 void log(const char* fmt, ...);

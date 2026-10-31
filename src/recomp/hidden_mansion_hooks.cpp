@@ -5,12 +5,14 @@
 #include "recomp/gameplay.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
+#include "recomp/interp.h"
 #include "recomp/lightning_test.h"
 #include "recomp/mirror_world.h"
 #include "recomp/runtime.h"
 #include "recomp/silly_world.h"
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
+#include "recomp/vr_host.h"
 
 #include <algorithm>
 #include <bit>
@@ -498,6 +500,7 @@ bool sInWipe = false;   // inside fn_80055C54 (iris wipe)
 }  // namespace
 
 HLE(fn_80041214) {
+    interp::HudElementScope projectedGhostHealth(0);
     ws::AnchorScope centered(0);  // drawn at Luigi's projected position: not edge-anchored
     if (ver::pal()) return hm::callMirror(c, "fn_80041214");
     sInHud = hm::mirrorActive();
@@ -513,6 +516,12 @@ HLE(fn_80009148) {
 }
 
 HLE(fn_80055C54) {
+    // Dedicated map-12 ending iris draw (fn_80055FFC): its shrinking
+    // screen-space rectangle floats over the diorama before the staff roll.
+    // Suppress only this visual call, not the native wipe update/scene timing.
+    // Keep flat play, other VR modes, room wipes and result-screen masks native.
+    if(vrhost::diorama() && rd32(VA(0x804D80C8))==12 &&
+       c.lr==VOFF(0x8005601C,0x80057F98))return;
     ws::WipeScope wipe;  // widescreen: the mask covers the whole width (widescreen.h)
     if (ver::pal()) return hm::callMirror(c, "fn_80055C54");
     sInWipe = hm::mirrorActive();

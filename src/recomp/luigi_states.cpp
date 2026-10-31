@@ -33,6 +33,8 @@
 // heat sets the game's own lock +0x1008 (the vacuum stops, fn_800B3BAC counts it down), burns
 // Luigi through the game's damage path (fn_800B9124, fire type) and shakes the meter. The meter
 // is the element meter, shown with the fire colours while the heat is above zero.
+#include "recomp/vr_host.h"
+#include "recomp/skip.h"
 #include "port/install.h"
 #include "port/settings.h"
 #include "recomp/coop.h"
@@ -44,6 +46,7 @@
 #include "recomp/skip.h"
 #include "recomp/unused2.h"
 #include "recomp/version.h"
+#include "recomp/widescreen.h"
 
 #include <cmath>
 #include <cstdio>
@@ -428,6 +431,8 @@ HLE(fn_80045F58) {
 
 // Element meter draw: shakes while the Poltergust is overheated (meter x at lbl_804D858C).
 HLE(fn_80046120) {
+    // Suppress the complete meter draw (frame, icon and fill), not its update.
+    if(ws::hideGameplayHud())return;
     int value = 0;
     bool hot = false;
     if (!unused2::overheatMeter(&value, &hot) || !hot) {
@@ -470,6 +475,23 @@ HLE(fn_800AEEA8) {
         }
         c.r[3] = 1;
         return;
+    }
+    if(id==2&&vrhost::firstPerson()&&!skip::cinematicCamera()&&gptr(msg)) {
+        const u32 slot=rd32(msg+8),sourcePosition=rd32(msg+4);
+        u32 source=slot<128?rd32(VA(0x803D48A0)+4*slot):0;
+        if(s32(slot)<0&&gu::inMem1(sourcePosition))for(unsigned i=0;i<128;++i) {
+            const u32 actor=rd32(VA(0x803D48A0)+4*i);
+            if(gptr(actor)&&actor+0x44==sourcePosition){source=actor;break;}
+        }
+        {
+            if(gptr(source)&&gu::inMem1(source+0x3F)) {
+                const u32 type=rd32(source+0x3C);
+                if(type<0x29C8/0x1C&&(rd16(VA(0x8033B590)+0x1C*type+8)&8)) {
+                    static unsigned reports=0;if(reports++<8)log("[vr encounter] ghost startle kept in live first person (type %u)",type);
+                    c.r[3]=1;return;
+                }
+            }
+        }
     }
     gameplay::callLuigiMessage(c);  // gameplay_hooks.cpp (Luigi's health, recovery hearts)
     if (id == 2 && c.r[3] && crawlOn() && gptr(msg)) {

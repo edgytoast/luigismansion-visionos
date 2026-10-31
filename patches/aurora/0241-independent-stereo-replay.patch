@@ -1,0 +1,93 @@
+--- a/lib/gx/command_processor.cpp
++++ b/lib/gx/command_processor.cpp
+@@ -1587,21 +1587,24 @@
+     // Replay state slots: everything but the copy-texture caches (copies made since stay valid)
+     // and the per-frame cache state (array upload ranges, texture binds), which is rebuilt.
+     // Slots 4..7 (GX_AURORA_SET_REPLAY_MASK passes) hold the GX state only.
+-    static std::array<std::unique_ptr<GXState>, 8> sSlots;
++    static std::array<std::unique_ptr<GXState>, 16> sSlots;
+     // The copy textures each slot's frame ended with (by generation, so they stay as they were).
+-    static std::array<std::optional<decltype(GXState::copyTextures)>, 4> sCopySlots;
+-    const u8 slot = reader.read<u8>() & 7;
++    static std::array<std::optional<decltype(GXState::copyTextures)>, 8> sCopySlots;
++    const u8 slot = reader.read<u8>() & 15;
++    // 0..3: left/flat history; 4..7: temporary mask passes; 8..11: right history.
++    const bool stateOnly = (slot >= 4 && slot < 8) || slot >= 12;
++    const u8 copySlot = slot >= 8 && slot < 12 ? slot - 4 : slot;
+     auto& state = g_gxState;
+     const u8 generation = state.copyGeneration;
+-    if (slot >= 4) {
++    if (stateOnly) {
+       // (state only: copies, copy-to-RAM entries and generation flags stay as they are)
+     } else if (subCmd == GX_AURORA_STATE_SAVE) {
+-      sCopySlots[slot] = state.copyTextures;
+-      gfx::efb_ram::save_slot(slot);
++      sCopySlots[copySlot] = state.copyTextures;
++      gfx::efb_ram::save_slot(copySlot);
+       gfx::efb_ram::set_generation(generation, false, false);
+-    } else if (sCopySlots[slot]) {
+-      state.copyTextures = *sCopySlots[slot];
+-      gfx::efb_ram::restore_slot(slot);
++    } else if (sCopySlots[copySlot]) {
++      state.copyTextures = *sCopySlots[copySlot];
++      gfx::efb_ram::restore_slot(copySlot);
+       texture::invalidate_bindings();
+     }
+     auto copies = std::move(state.copyTextures);
+@@ -1625,8 +1628,8 @@
+     state.copyGeneration = generation;
+   } else if (subCmd == GX_AURORA_COPY_GENERATION) {
+     const u8 v = reader.read<u8>();
+-    g_gxState.copyGeneration = v & 3;
+-    gfx::efb_ram::set_generation(v & 3, (v & 0x80) != 0, (v & 0x40) != 0);
++    g_gxState.copyGeneration = v & 7;
++    gfx::efb_ram::set_generation(v & 7, (v & 0x80) != 0, (v & 0x40) != 0);
+   } else if (subCmd == GX_AURORA_DEBUG_GROUP_PUSH) {
+     auto label = reader.read_string();
+     gfx::push_debug_group(std::move(label));
+--- a/lib/gfx/efb_ram.cpp
++++ b/lib/gfx/efb_ram.cpp
+@@ -378,11 +378,11 @@
+ uint8_t g_generation = 0;
+ bool g_replaying = false;
+ bool g_noReadback = false;  // a repeated replay of a tape: its copies were read back already
+-std::array<std::optional<std::vector<Entry>>, 4> g_entrySlots;
++std::array<std::optional<std::vector<Entry>>, 8> g_entrySlots;
+ 
+ LazyBufferRef bytes_buffer(const uint8_t* dest, uint32_t size) {
+   const uint64_t key = reinterpret_cast<uintptr_t>(dest) ^ (static_cast<uint64_t>(size) << 40) ^
+-                       (static_cast<uint64_t>(g_generation) << 62);
++                       (static_cast<uint64_t>(g_generation) << 61);
+   auto& buf = g_bytePool[key];
+   if (!buf) {
+     buf = std::make_shared<LazyBuffer>(LazyBuffer{
+@@ -999,7 +999,7 @@
+ 
+ void set_generation(uint8_t generation, bool replaying, bool noReadback) {
+   std::lock_guard lock{g_mutex};
+-  g_generation = generation & 3;
++  g_generation = generation & 7;
+   g_replaying = replaying;
+   g_noReadback = noReadback;
+ }
+@@ -1007,16 +1007,16 @@
+ void save_slot(uint8_t slot) {
+   std::optional<std::vector<Entry>> old; // released after g_mutex
+   std::lock_guard lock{g_mutex};
+-  old = std::move(g_entrySlots[slot & 3]);
+-  g_entrySlots[slot & 3] = g_entries;
++  old = std::move(g_entrySlots[slot & 7]);
++  g_entrySlots[slot & 7] = g_entries;
+ }
+ 
+ void restore_slot(uint8_t slot) {
+   std::vector<Entry> old; // released after g_mutex
+   std::lock_guard lock{g_mutex};
+-  if (g_entrySlots[slot & 3]) {
++  if (g_entrySlots[slot & 7]) {
+     old = std::move(g_entries);
+-    g_entries = *g_entrySlots[slot & 3];
++    g_entries = *g_entrySlots[slot & 7];
+   }
+ }
+ 

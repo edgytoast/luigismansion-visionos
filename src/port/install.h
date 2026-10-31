@@ -48,9 +48,10 @@ const char* availNote(Avail a);  // short explanation, nullptr for Yes
 InstallState& install();
 
 // Where the port writes (created on demand; docs/SETUP.md, docs/LINUX.md):
-//   Windows: all three are %APPDATA%\Luigi's Mansion Recompiled.
-//   Linux:   configDir  $XDG_CONFIG_HOME/Luigi's Mansion Recompiled (~/.config/...): settings.ini, install.ini
-//            dataDir    $XDG_DATA_HOME/Luigi's Mansion Recompiled (~/.local/share/...): game modules, Hidden
+// LM_VR_BUILD substitutes "Luigi's Mansion VR" for the profile name below.
+//   Windows: all three are %APPDATA%\Luigi's Mansion PC.
+//   Linux:   configDir  $XDG_CONFIG_HOME/Luigi's Mansion PC (~/.config/...): settings.ini, install.ini
+//            dataDir    $XDG_DATA_HOME/Luigi's Mansion PC (~/.local/share/...): game modules, Hidden
 //                       Mansion overlays, memory cards, screenshots
 //            cacheDir   $XDG_CACHE_HOME/Luigi's Mansion Recompiled (~/.cache/...): GPU pipeline/shader caches
 //   Portable mode (both): all three are <program folder>/portable (the Windows layout).

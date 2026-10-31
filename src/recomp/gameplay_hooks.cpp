@@ -1,8 +1,10 @@
+#include "recomp/vr_host.h"
 // Gameplay / difficulty options as hooks on the game (see gameplay.h,
 // docs/GAMEPLAY_OPTIONS.md). Every hook calls the original unchanged when its option is at the
 // neutral default, so the original game is untouched unless the player changes something.
 #include "recomp/gameplay.h"
 #include "recomp/ghost_lights.h"
+#include "recomp/vr_avatar_guest.h"
 
 #include "recomp/coop.h"
 #include "recomp/coop_test.h"
@@ -398,10 +400,26 @@ HLE(fn_80081BCC) {
     const float k = current().vacuumStrength;
     const u32 cap = c.r[3];
     const u32 ghost = inMem1(cap) ? rd32(cap + 0x18) : 0;
-    if (inMem1(ghost)) ghostlights::onVacuumTick(ghost);  // ghost_lights.cpp
-    if (k == 1.0f || !inMem1(ghost)) return hm::callWithFlag(c, "fn_80081BCC");
-    const s32 before = rds16(ghost + 0xFC);
-    hm::callWithFlag(c, "fn_80081BCC");
+    if (!inMem1(ghost)) return hm::callWithFlag(c,"fn_80081BCC");
+    ghostlights::onVacuumTick(ghost);vravatar::noteCapturedGhost(ghost);
+    const s32 before=rds16(ghost+0xFC);
+    static const bool gateTest=std::getenv("LM_VR_CAPTURE_GATE_TEST")!=nullptr;
+    static unsigned testTicks=0;
+    const bool allowDamage=gateTest?++testTicks>90:vravatar::captureDamageAllowed(ghost);
+    // The original function subtracts one from the source HP on a drain tick.
+    // Bias only that temporary input when blocked, so its own completion logic
+    // still sees the real (positive) HP, including the last-HP boundary.
+    if(!allowDamage&&before>0){wr16(cap+0x98,u16(before));wr16(ghost+0xFC,u16(vr::captureHealthSource(before,false)));}
+    hm::callWithFlag(c,"fn_80081BCC");
+    if(!allowDamage&&before>0){
+        wr16(ghost+0xFC,u16(before));
+        if(rds16(cap+0x98)<before)wr16(cap+0x98,u16(before));
+        if(gateTest&&testTicks%15==0)log("[vr capture test] blocked tick %u source HP restored %d capture HP %d",testTicks,rds16(ghost+0xFC),rds16(cap+0x98));
+        return;
+    }
+    if(gateTest&&testTicks==91)log("[vr capture test] native damage enabled after blocked interval");
+    if(before>0&&rds16(cap+0x98)==before-1)vrhost::captureDamageFeedback(ghost);
+    if(k==1.0f)return;
     const s32 after = rds16(cap + 0x98);
     if (before <= 0 || after != before - 1) return;  // no drain tick this frame
     static u32 sGhost = 0;

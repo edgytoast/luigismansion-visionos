@@ -222,6 +222,7 @@ std::vector<Field> fields() {
         flag("enhancements", "heart_door", e.heartDoor),
         flag("enhancements", "star_door", e.starDoor),
         flag("enhancements", "beta_map_luigi", e.betaMapLuigi),
+        flag("enhancements", "map_element_sources", e.mapElementSources),
         flag("enhancements", "early_luigi", e.earlyLuigi),
         flag("enhancements", "air_water_nozzles", e.airWaterNozzles),
         flag("enhancements", "early_poltergust", e.earlyPoltergust),

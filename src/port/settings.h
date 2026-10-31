@@ -90,6 +90,7 @@ struct AudioSettings {
 };
 
 struct EnhancementSettings {
+    bool mapElementSources = false; // collectable fire/water/ice markers, map screen only
     bool showFps = false;
     bool pauseOnFocusLoss = true;
     bool hiddenMansionPal = true;  // default Hidden Mansion rules for saves that have not chosen in E. Gadd's lab

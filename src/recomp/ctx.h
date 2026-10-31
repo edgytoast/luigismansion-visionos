@@ -26,7 +26,8 @@ using s64 = __INT64_TYPE__;
 constexpr u32 kMem1Size = 0x01800000;
 constexpr u32 kLockedCacheOffset = 0x01800000;  // host offset of the 0xE0000000 locked cache
 // Host window for guest addresses (masked): MEM1 (24 MiB), the locked cache, then memory that
-// only host tools use (the model viewer's heap at 0x81810000+). Must stay a power of two.
+// only host tools use (viewer scratch at 0x81810000, HLE objects at 0x81900000,
+// viewer heap at 0x82000000). Must stay a power of two.
 constexpr u32 kHostMemSize = 0x04000000;
 constexpr u32 kHostMemMask = kHostMemSize - 1;
 

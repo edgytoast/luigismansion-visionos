@@ -91,6 +91,11 @@ void addSiteTag(const SiteTag& t);
 
 // --- guest thread ---------------------------------------------------------------
 bool capturing();
+void noteResultsScreen(bool flat=false); // gallery 3D view vs ACCOUNT 2D layout
+void noteDoorAnimation();
+void notePlayerDemo(); // guest: dedicated non-phone player/event camera rendered
+void noteSearchToggle(bool closing = false);
+void noteGameBoyMap(); // guest: map renderer actually issued draws in this tape
 // Before a GX call or raw FIFO write: while a frame is being captured, a guest thread other than the
 // capturing one joins the capture (AuroraCaptureJoin, Aurora 0235), so its commands land in the
 // tape in the order the guest issued them instead of in Aurora's FIFO beside the host's replays.
@@ -148,6 +153,15 @@ void pushTextViewJoin(u32 id);
 void popTextViewJoin();
 void setCurrentMtx(u32 id);  // GXSetCurrentMtx (which position matrix 2D blocks are drawn with)
 void popTextGroup();
+// Capture-only element identity; does not change native interpolation/layout.
+unsigned setHudElement(unsigned element);
+struct HudElementScope {
+    unsigned previous;
+    explicit HudElementScope(unsigned element):previous(setHudElement(element)){}
+    ~HudElementScope(){setHudElement(previous);}
+    HudElementScope(const HudElementScope&)=delete;
+    HudElementScope& operator=(const HudElementScope&)=delete;
+};
 struct TextGroupScope {
     explicit TextGroupScope(u32 id) { pushTextGroup(id); }
     ~TextGroupScope() { popTextGroup(); }
@@ -191,6 +205,7 @@ void noteColors(u32 at, u32 lightObj = 0);
 // whenever a value is noted, so a pass drawn from another camera (the shadow light) factors by
 // that camera.
 u32 viewMatrixSource();
+void noteVrPlayer(float x,float y,float z,float facingX,float facingZ,bool valid);
 
 // Shadow maps (LM, shadows.cpp): the light pass's view LV and the receivers' projection K = P x LV
 // and depth-ramp R x LV matrices of this frame. Receivers' shadow texture matrices noted between
@@ -257,6 +272,7 @@ void resumeAfterDisplayList();
 // Replays the newest tape into the open Aurora frame. Returns false if there is
 // no tape yet. `final` replays the newest tape exactly (no blending).
 bool replay(bool final = false);
+bool replayStereoEye(); // host: same tape pair and alpha selected by replay(); no simulation tick
 void reset();  // drop all tapes (after leaving interpolated mode)
 // LM_INTERP_JUDDER=<file>: real-time pacing log for tools/interp/judder.py (host loop phases,
 // per present the tapes and alpha shown, per tape its stamp and finish time). Host thread:

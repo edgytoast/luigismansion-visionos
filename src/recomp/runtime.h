@@ -6,6 +6,16 @@ namespace recomp {
 
 constexpr double kTimerClock = 40500000.0;  // OS timer: bus clock / 4
 
+// Host-owned guest objects must not reduce the retail game's MEM1 arena. This
+// range is inside the host address window, above the locked cache/viewer scratch
+// and below early Luigi's model copies (0x81F00000) and the viewer heap (0x82000000).
+constexpr u32 kHleHeapBegin = 0x81820000;
+constexpr u32 kHleHeapEnd = 0x819A0000;
+static_assert(kHleHeapBegin >= 0x80000000u + kMem1Size + 0x4000);
+static_assert(kHleHeapEnd <= 0x81F00000u);
+static_assert(kHleHeapEnd <= 0x80000000u + kHostMemSize);
+inline bool inHleHeap(u32 address) { return address >= kHleHeapBegin && address < kHleHeapEnd; }
+
 // The recompiled game: set once at startup, before any guest code runs (module_loader.cpp).
 extern const GameModule* g_module;
 

@@ -2,6 +2,7 @@
 // Drawn with Aurora's Dear ImGui on the host thread between the guest's present
 // and aurora_end_frame. While it is open the game receives neutral pad input.
 #include "recomp/menu.h"
+#include "recomp/test_checkpoints.h"
 #include "recomp/gx_bridge.h"
 
 #include "port/install.h"
@@ -22,10 +23,12 @@
 #include "recomp/skip.h"
 #include "recomp/ui_scale.h"
 #include "recomp/unused2.h"
+#include "recomp/vr_host.h"
 
 #include <aurora/aurora.h>
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <backends/imgui_impl_sdl3.h>
 #include <SDL3/SDL.h>
 
 #include <dolphin/vi.h>
@@ -39,6 +42,9 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include <map>
+#include <fstream>
+#include <iomanip>
 
 namespace recomp {
 u32 copyDispCount();  // hle_gx.cpp
@@ -50,6 +56,7 @@ namespace {
 // Test aid: LM_MENU_TAB=<Enhancements sub-tab name> starts with the menu open on that tab.
 const char* sEnvTab = std::getenv("LM_MENU_TAB");
 bool sOpen = sEnvTab != nullptr;
+bool sFocusMenu = false;
 
 std::string sOpenSub;  // sub-tab to select once (LM_MENU_ID_CHECK sweep)
 
@@ -358,7 +365,7 @@ void applyWindowSettings() {
     // Automated runs (scripted --input, or LM_BACKGROUND=1) never pause when another window
     // takes focus, so several test instances can run side by side.
     static const bool sBackground = !port::options().inputScript.empty() || std::getenv("LM_BACKGROUND") != nullptr;
-    aurora_set_pause_on_focus_lost(port::settings().enhancements.pauseOnFocusLoss && !sBackground);
+    aurora_set_pause_on_focus_lost(port::settings().enhancements.pauseOnFocusLoss && !sBackground && !vrhost::enabled());
     if (sBackground) aurora_set_background_input(true);
 }
 
@@ -421,6 +428,11 @@ void releaseNotes(const port::update::Info& info) {
 }
 
 void updatesSection() {
+#ifdef LM_VR_BUILD
+    ImGui::SeparatorText("Updates");
+    ImGui::TextWrapped("Custom VR build based on upstream 1.1.4. Updates are integrated separately to preserve the VR modes and settings.");
+    return;
+#endif
     namespace up = port::update;
     ImGui::SeparatorText("Updates");
     const up::State st = up::state();
@@ -1643,6 +1655,9 @@ void gameplaySection() {
 void generalEnhancementsTab() {
     auto& e = port::settings().enhancements;
     ImGui::SeparatorText("Interface");
+    sDirty |= recomp::menu::Checkbox("Show element sources on map", &e.mapElementSources);
+    ImGui::SetItemTooltip("Show the fire, water and ice medal icons in source rooms on the\n"
+                          "Game Boy Horror floor plan only. Availability can depend on progress.");
     sDirty |= recomp::menu::Checkbox("Show FPS", &e.showFps);
     ImGui::SetItemTooltip("Frames per second shown in the top-left corner.");
     if (recomp::menu::Checkbox("Pause when window loses focus", &e.pauseOnFocusLoss)) {
@@ -1896,6 +1911,11 @@ void fpsOverlay() {
 
 void init() {
     port::loadSettings();
+    if(vrhost::enabled() && port::settings().video.resolutionScale==0) port::settings().video.resolutionScale=3;
+    if(vrhost::enabled()) {
+        port::settings().rendering.textureCopyFilter=false;
+        port::settings().rendering.displayCopyFilter=false;
+    }
     recomp::ui::install(recomp::ui::Context::Game);
     applyWindowSettings();
     // LM_MENU=<tab> (testing/screenshots): start with the menu open on that tab.
@@ -1911,6 +1931,11 @@ void openTreesForCheck() {
     if (idcheck::active() || click::due()) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
 }
 
+void toggle() {
+    sOpen=!sOpen;
+    if(sOpen)sFocusMenu=true;
+    if(!sOpen&&sDirty){port::saveSettings();sDirty=false;}
+}
 bool isOpen() { return sOpen || recomp::dev::capturesInput(); }
 bool quitRequested() { return sQuit; }
 
@@ -1924,10 +1949,26 @@ void shutdown() {
 }
 
 void handleEvent(const SDL_Event& ev) {
+    // Flat-screen gamepads use the same two-stick shortcut as tracked VR pads.
+    // Track each device separately so clicks on different pads cannot form a chord.
+    if(ev.type==SDL_EVENT_GAMEPAD_BUTTON_DOWN || ev.type==SDL_EVENT_GAMEPAD_BUTTON_UP) {
+        static SDL_JoystickID chordPad=0;
+        if(ev.type==SDL_EVENT_GAMEPAD_BUTTON_UP &&
+           (ev.gbutton.button==SDL_GAMEPAD_BUTTON_LEFT_STICK || ev.gbutton.button==SDL_GAMEPAD_BUTTON_RIGHT_STICK) && chordPad==ev.gbutton.which)chordPad=0;
+        if(ev.type==SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+           (ev.gbutton.button==SDL_GAMEPAD_BUTTON_LEFT_STICK || ev.gbutton.button==SDL_GAMEPAD_BUTTON_RIGHT_STICK)) {
+            auto* pad=SDL_GetGamepadFromID(ev.gbutton.which);
+            if(pad && !chordPad && SDL_GetGamepadButton(pad,SDL_GAMEPAD_BUTTON_LEFT_STICK) && SDL_GetGamepadButton(pad,SDL_GAMEPAD_BUTTON_RIGHT_STICK)) {
+                chordPad=ev.gbutton.which;toggle();
+                if(std::getenv("LM_MENU_NAV_TRACE"))std::printf("[menu pad] chord open=%d\n",int(sOpen));
+                return;
+            }
+        }
+    }
     if (recomp::controls::handleEvent(ev)) return;  // binding capture owns the key
     if (recomp::dev::handleKey(ev)) return;
     if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) return;
-    if (ev.key.key == SDLK_F1) sOpen = !sOpen;
+    if (ev.key.key == SDLK_F1) toggle();
     else if (ev.key.key == SDLK_ESCAPE && sOpen) sOpen = false;
     if (!sOpen && sDirty) {
         port::saveSettings();
@@ -2029,7 +2070,29 @@ int stepButtons() {
 }
 }  // namespace
 
+float sliderResetDefault(const char* label,float current) {
+    static std::map<unsigned long long,float> baselines;
+    static bool loaded=false;
+    const auto path=port::configDir()/"slider-reset-baselines.ini";
+    if(!loaded){std::ifstream file(path);unsigned long long key;float value;
+        while(file>>key>>value)if(std::isfinite(value))baselines[key]=value;loaded=true;}
+    const unsigned mode=!vrhost::enabled()?3:vrhost::firstPerson()?2:vrhost::diorama()?0:1;
+    const auto key=(static_cast<unsigned long long>(mode)<<32)|ImGui::GetID(label);
+    auto [entry,inserted]=baselines.emplace(key,current);
+    if(inserted){std::ofstream file(path);file<<std::setprecision(9);
+        for(const auto& [id,value]:baselines)file<<id<<' '<<value<<'\n';}
+    return entry->second;
+}
+namespace {
+template<class T> bool resetSliderButton(const char* label,T* value,T defaults) {
+    ImGui::SameLine();ImGui::PushID(label);
+    const bool reset=ImGui::SmallButton("Reset");
+    if(reset)*value=defaults;
+    ImGui::SetItemTooltip("Restore saved baseline: %.3f",double(defaults));ImGui::PopID();return reset;
+}
+}
 bool SliderFloat(const char* label, float* v, float min, float max, const char* format, int flags) {
+    const float defaults=float(sliderResetDefault(label,float(*v)));
     ImGui::PushID(label);
     const int dir = stepButtons();
     ImGui::PopID();
@@ -2040,10 +2103,12 @@ bool SliderFloat(const char* label, float* v, float min, float max, const char* 
         *v = std::clamp(std::round(*v / step + float(dir)) * step, lo, hi);
         changed = true;
     }
+    changed|=resetSliderButton(label,v,defaults);
     return changed;
 }
 
 bool SliderInt(const char* label, int* v, int min, int max, const char* format, int flags) {
+    const int defaults=int(sliderResetDefault(label,float(*v)));
     ImGui::PushID(label);
     const int dir = stepButtons();
     ImGui::PopID();
@@ -2052,10 +2117,16 @@ bool SliderInt(const char* label, int* v, int min, int max, const char* format, 
         *v = std::clamp(*v + dir, std::min(min, max), std::max(min, max));
         changed = true;
     }
+    changed|=resetSliderButton(label,v,defaults);
     return changed;
 }
 
 void draw() {
+    static bool gamepadNavigationReady=false;
+    if(!gamepadNavigationReady){ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_AutoAll);gamepadNavigationReady=true;}
+    auto& navigation=ImGui::GetIO().ConfigFlags;
+    if(!vrhost::enabled())navigation|=ImGuiConfigFlags_NavEnableGamepad;
+    else navigation&=~ImGuiConfigFlags_NavEnableGamepad;
     click::frame();
     scriptedSettings();
     skip::drawOverlay();
@@ -2099,14 +2170,20 @@ void draw() {
     updateToast();
     refreshRateToast();
     if (!sOpen) return;
-    // Default 680 x 400 and at least 520 x 300 at 100%, scaled with the menu size and kept on the
-    // screen (ui_scale.cpp; after the first-use position, which would replace the one it sets).
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
-    recomp::ui::beforeWindow(kMenuWindow, ImVec2(680, 400), ImVec2(520, 300));
+    const bool fixedVrMenu = vrhost::enabled();
+    const ImVec2 menuDisplay = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowSize(fixedVrMenu
+        ? ImVec2(std::min(680.0f, menuDisplay.x - 24.0f), std::min(400.0f, menuDisplay.y - 24.0f))
+        : ImVec2(680, 400), fixedVrMenu ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
+        fixedVrMenu ? ImGuiCond_Always : ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+    if(!fixedVrMenu) recomp::ui::beforeWindow(kMenuWindow, ImVec2(680,400), ImVec2(520,300));
     idcheck::beforeWindow();
     menuSizeTestMouse();
+    if(sFocusMenu){ImGui::SetNextWindowFocus();ImGui::SetNavCursorVisible(true);sFocusMenu=false;}
     bool open = true;
-    if (ImGui::Begin(kMenuWindow, &open, ImGuiWindowFlags_NoCollapse)) {
+    if (ImGui::Begin(kMenuWindow, &open, ImGuiWindowFlags_NoCollapse |
+        (fixedVrMenu ? ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings : 0))) {
         ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.45f);
         if (ImGui::BeginTabBar("tabs")) {
             if (tab("Visuals")) {
@@ -2131,7 +2208,12 @@ void draw() {
                 soundTab();
                 ImGui::EndTabItem();
             }
+            if (vrhost::enabled() && tab("VR")) {
+                vrhost::drawMenu();
+                ImGui::EndTabItem();
+            }
             if (tab("Controls")) {
+                vrhost::drawControlOptions();
                 sDirty |= recomp::controls::drawTab();
                 ImGui::EndTabItem();
             }
@@ -2139,6 +2221,7 @@ void draw() {
                 enhancementsTab();
                 ImGui::EndTabItem();
             }
+            if (tab("Testing")) {checkpoints::drawMenu();ImGui::EndTabItem();}
             if (tab("Game")) {
                 gameTab();
                 ImGui::EndTabItem();
@@ -2186,10 +2269,18 @@ void draw() {
             if (recomp::menu::Button("Cancel")) ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
+        ImGui::Separator();
+        const char* vrMode=vrhost::firstPerson()?"First person":vrhost::diorama()?"Diorama":"Life-size";
+        ImGui::TextDisabled("Upstream v%s | VR build 150 | %s",port::update::buildVersion(),vrhost::enabled()?vrMode:"Flat");
         idcheck::insideWindow();
     }
     ImGui::End();
     idcheck::afterWindow();
+    if(std::getenv("LM_MENU_NAV_TRACE")){
+        static ImGuiID last=0;const auto& g=*ImGui::GetCurrentContext();
+        if(g.NavId!=last){last=g.NavId;std::printf("[menu pad] focus=%u gamepad=%d\n",last,int(bool(g.IO.BackendFlags&ImGuiBackendFlags_HasGamepad)));std::fflush(stdout);}
+    }
+    vrhost::drawSettingsPointer();
     if (!open) sOpen = false;
     if (!sOpen && sDirty) {
         port::saveSettings();

@@ -3,6 +3,8 @@
 // and the projected HUD positions are in hidden_mansion_hooks.cpp. All of it follows
 // hm::mirrorOn(): the European Hidden Mansion, or "Mirrored Mansion" (docs/ENHANCEMENTS.md).
 #include "recomp/mirror_world.h"
+#include "recomp/interp.h"
+#include "recomp/map_elements.h"
 
 #include "recomp/coop.h"
 #include "recomp/guest_util.h"
@@ -163,8 +165,8 @@ HLE(fn_8018865C) { hm::callMirror(c, "fn_8018865C"); }
 HLE(fn_80189054) { hm::callMirror(c, "fn_80189054"); }
 
 // Both games (`us pal`): the map draws.
-HLE(fn_80029DD4) { mirror::mapDraw(c, "fn_80029DD4"); }
-HLE(fn_8002A01C) { mirror::mapDraw(c, "fn_8002A01C"); }
+HLE(fn_80029DD4) { const u32 before=interp::drawCount();mirror::mapDraw(c, "fn_80029DD4");if(interp::drawCount()!=before){interp::noteGameBoyMap();mapelements::draw();} }
+HLE(fn_8002A01C) { const u32 before=interp::drawCount();mirror::mapDraw(c, "fn_8002A01C");if(interp::drawCount()!=before){interp::noteGameBoyMap();mapelements::draw();} }
 
 // fn_8001D894(model, packet): GXSetCullMode from the packet's cull index, the mirrored row when
 // lbl_804D8230 is set. Inside the mirrored map draw (USA game) it reads as set for this call only,

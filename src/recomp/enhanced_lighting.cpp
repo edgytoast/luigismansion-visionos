@@ -723,6 +723,7 @@ namespace tags {
 void init();  // tags.cpp
 }
 HLE(fn_8000BB98) {
+    worldlights::HiddenPlayerParticles hiddenPlayerParticles;
     const bool main = c.r[3] == 0;
     // Frame interpolation: everything drawn in this view is under the view's tag scope (its camera's
     // identity; tags.cpp, docs/INTERPOLATION.md "Tagged interpolation").

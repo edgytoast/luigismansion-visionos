@@ -294,7 +294,7 @@ void swapToadIcon(bool green) {
     // Sprite: +0x0C colour, +0x10 texture object (fn_8003BDD4 builds it from the .bti).
     const u32 toad = kIconSpritesVA + kIconSpriteOff + kIconSpriteSize * kIconToad + 0x10;
     const u32 greenTex = rd32(kIconSpritesVA + kIconSpriteOff + kIconSpriteSize * kIconGreenToad + 0x10);
-    if (!inMem1(greenTex)) return;  // not loaded yet
+    if (!inMem1(greenTex) && !inHleHeap(greenTex)) return;  // not loaded yet
     const u32 cur = rd32(toad);
     if (green && cur != greenTex) {  // first time, or the game reloaded its icons
         sSaved = cur;

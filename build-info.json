@@ -1,0 +1,23 @@
+{
+  "upstream": "https://github.com/rob646464/luigis-mansion-recompiled",
+  "version": "v1.1.4",
+  "commit": "850a2b9a7613678f27d29d47e2bb11c74d2e0557",
+  "vr_build": 150,
+  "default_mode": "Diorama",
+  "platform": "Windows x64 PC OpenXR",
+  "game_data_included": false,
+  "package_revision": 2,
+  "flat_screen": true,
+  "launchers": [
+    "Luigi's Mansion VR.exe"
+  ],
+  "disc_setup": "Native Browse/Install; remembers user-selected path",
+  "flat_controller_menu": true,
+  "native_exe_launcher": true,
+  "steam_frame_standalone": "Experimental; use Windows PCVR for tested path",
+  "openxr_loader": "Khronos OpenXR.Loader 1.1.65 x64",
+  "default_exe": "Luigi's Mansion VR.exe",
+  "change": "Portable room checkpoints in game-folder statesaves",
+  "source_snapshot": "LMVR-Source-build150.zip",
+  "personal_data_included": false
+}

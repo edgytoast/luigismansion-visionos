@@ -1,5 +1,6 @@
 // Leftover room models visited for one warp (see room_swap.h).
 #include "recomp/room_swap.h"
+#include "recomp/test_checkpoints.h"
 
 #include "recomp/dev_tools.h"
 #include "recomp/guest_util.h"
@@ -252,6 +253,7 @@ s32 overlayRead(s32 entry, void* dst, s32 length, s32 offset) {
 HLE(findLuigiAppearIndex__Q24Koga9EnManagerFPQ24Koga8ToolDataUl) {
     const u32 tool = c.r[4];
     callOriginal(c, "findLuigiAppearIndex__Q24Koga9EnManagerFPQ24Koga8ToolDataUl");
+    checkpoints::spawnEntry(tool,s32(c.r[3]));
     std::lock_guard lk(sM);
     if (sSpawnPending && sActive.load() >= 0) {
         sLuigiEntry = s32(c.r[3]);
@@ -262,6 +264,7 @@ HLE(findLuigiAppearIndex__Q24Koga9EnManagerFPQ24Koga8ToolDataUl) {
 HLE(getValue__Q24Koga8ToolDataCFiPCcPf) {
     const u32 tool = c.r[3], entry = c.r[4], name = c.r[5], out = c.r[6];
     callOriginal(c, "getValue__Q24Koga8ToolDataCFiPCcPf");
+    checkpoints::spawnValue(tool,s32(entry),gstr(name),out);
     std::lock_guard lk(sM);
     if (!sSpawnPending || sActive.load() < 0 || tool != sLuigiTool || s32(entry) != sLuigiEntry) return;
     const char* n = gstr(name);

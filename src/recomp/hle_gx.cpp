@@ -488,7 +488,7 @@ void gx::applyAccuracySettings() {
                 // Interpolated presentation replays every frame on the host after the fact: the
                 // per-draw early-Z split cost ~20 ms per replay in the foyer (presentation fell to
                 // ~35 fps); merged split pairs keep it at ~4 ms. Original 30 keeps the exact split.
-                (r.earlyZAlphaDepth && (port::settings().video.matchDisplay || port::settings().video.targetFps > port::kMinFps)
+                (r.earlyZAlphaDepth && (port::settings().video.matchDisplay || frame::targetFps() > port::kMinFps)
                      ? GX_AURORA_ACCURACY_EARLY_Z_MERGE
                      : 0) |
                 (r.textureCopyFilter ? GX_AURORA_ACCURACY_COPY_FILTER : 0);

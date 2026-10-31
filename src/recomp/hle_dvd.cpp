@@ -4,6 +4,7 @@
 #include "recomp/room_swap.h"
 #include "recomp/unused_maps.h"
 #include "recomp/unused2.h"
+#include "recomp/vr_avatar_guest.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
@@ -36,21 +37,24 @@ bool destOk(u32 dest, u32 size, const char* what, u32 lr) {
 // Host-served files: leftover-room visits (room_swap.cpp), the rebuilt unused maps 7/8
 // (unused_maps.cpp), then the PAL Hidden Mansion overlay.
 s32 ovEntry(const char* path) {
-    s32 e = rooms::overlayEntry(path);
+    s32 e = vravatar::encounterOverlayEntry(path);
+    if (e < 0) e = rooms::overlayEntry(path);
     if (e < 0) e = unused2::overlayEntry(path);
     if (e < 0) e = unused_maps::overlayEntry(path);
     return e >= 0 ? e : hm::overlayEntry(path);
 }
 bool ovIs(s32 e) {
-    return rooms::isOverlayEntry(e) || unused2::isOverlayEntry(e) || unused_maps::isOverlayEntry(e) || hm::isOverlayEntry(e);
+    return vravatar::isEncounterOverlay(e) || rooms::isOverlayEntry(e) || unused2::isOverlayEntry(e) || unused_maps::isOverlayEntry(e) || hm::isOverlayEntry(e);
 }
 u32 ovLength(s32 e) {
+    if(vravatar::isEncounterOverlay(e))return vravatar::encounterOverlayLength(e);
     if (rooms::isOverlayEntry(e)) return rooms::overlayLength(e);
     if (unused2::isOverlayEntry(e)) return unused2::overlayLength(e);
     if (unused_maps::isOverlayEntry(e)) return unused_maps::overlayLength(e);
     return hm::overlayLength(e);
 }
 s32 ovRead(s32 e, void* dst, s32 len, s32 off) {
+    if(vravatar::isEncounterOverlay(e))return vravatar::encounterOverlayRead(e,dst,len,off);
     if (rooms::isOverlayEntry(e)) return rooms::overlayRead(e, dst, len, off);
     if (unused2::isOverlayEntry(e)) return unused2::overlayRead(e, dst, len, off);
     if (unused_maps::isOverlayEntry(e)) return unused_maps::overlayRead(e, dst, len, off);

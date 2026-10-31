@@ -13,6 +13,10 @@
 #include "recomp/mirror_world.h"
 #include "recomp/silly_world.h"
 #include "recomp/version.h"
+#include "recomp/vr_host.h"
+#include "recomp/vr_avatar_guest.h"
+#include "recomp/widescreen.h"
+#include "recomp/guest_util.h"
 
 #include <cmath>
 #include <cstdio>
@@ -20,6 +24,7 @@
 #include <algorithm>
 #include <bit>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace recomp {
@@ -46,6 +51,41 @@ using interp::TagScope;
 
 // Furniture/object scopes open: bin models drawn inside are objects, outside them map geometry.
 int sObjectDepth = 0;
+u32 sRoomModel=0;
+struct FoyerLowerModel {u32 model=0,table=0,upper=0,upperTable=0;bool drawing=false;unsigned frame=~0u,upperFrame=~0u;} sFoyerLower;
+
+struct RoomModelScope {
+    u32 previous;
+    explicit RoomModelScope(u32 model):previous(sRoomModel) {sRoomModel=model;}
+    ~RoomModelScope() {sRoomModel=previous;}
+};
+struct RoomFrameScope {
+    u32 parts=0;
+    u16 count=0;
+    explicit RoomFrameScope(int node) {
+        if(!vrhost::hideRoomFrames() || !sRoomModel || node<0 || node>4095 || !gu::inMem1(sRoomModel+0x3C)) return;
+        const u32 table=rd32(sRoomModel+0x3C), address=table+u32(node)*0x8C;
+        if(!gu::inMem1(table) || !gu::inMem1(address) || !gu::inMem1(address+0x8B) || !(rd16(address+8)&0x80)) return;
+        // Keep tree traversal and other room parts; suppress only this fadeable node's own batches.
+        parts=address+0x4C;count=rd16(parts);wr16(parts,0);
+    }
+    ~RoomFrameScope() {if(parts) wr16(parts,count);}
+};
+void traceRoomNode(int node) {
+    static const bool enabled=std::getenv("LM_VR_ROOM_TRACE")!=nullptr;
+    if(!enabled || !vrhost::enabled() || !sRoomModel || node<0 || node>4095 || !gu::inMem1(sRoomModel+0x3C)) return;
+    const u32 table=rd32(sRoomModel+0x3C), address=table+u32(node)*0x8C;
+    if(!gu::inMem1(table) || !gu::inMem1(address) || !gu::inMem1(address+0x8B)) return;
+    static std::unordered_set<u64> seen;
+    static u32 map=~0u;
+    const u32 current=rd32(VA(0x804D80C8));
+    if(current!=map) {map=current;seen.clear();}
+    if(seen.size()>2048 || !seen.insert((u64(sRoomModel)<<16)|u16(node)).second) return;
+    log("[vr room] map %u model %08X node %d flags %04X parts %u bounds %.1f %.1f %.1f -> %.1f %.1f %.1f",
+        current,sRoomModel,node,rd16(address+8),rd16(address+0x4C),
+        gu::rdf(address+0x30),gu::rdf(address+0x34),gu::rdf(address+0x38),
+        gu::rdf(address+0x3C),gu::rdf(address+0x40),gu::rdf(address+0x44));
+}
 // A stream item drawn with a shared S3D model (fn_800F3120 from fn_8011FB40): the model's group is
 // per item, not per model (u32 item address; 0: none).
 u32 sStreamItem = 0;
@@ -103,12 +143,17 @@ HLE(fn_8006033C) {
 // Model draws take the model instance in r3 (its data at +4); node draws (model, node index);
 // fn_80058A60 loads a mesh's matrices (model, mesh entry), fn_800595B8 draws it (model, mesh).
 HLE(fn_80059C54) {
+    ws::beforeS3dOpaqueDraw(c);
+    vravatar::DrawPose avatar(c,c.r[3]);
     registerSiteTags();
     TagScope t(TagCat::Object, c.r[3], rd32(c.r[3] + 4));
     interp::tagGroup(c.r[3]);  // one instance: its matrices blend alike (interp.cpp, replayPair)
-    callOriginal(c, "fn_80059C54");
+    const u32 object=c.r[3];
+    if(!avatar.hidden())callOriginal(c, "fn_80059C54");
+    vravatar::drawOtherTool(c,object,false);
 }
 HLE(fn_80059F6C) {
+    vravatar::DrawPose avatar(c,c.r[3]);
     registerSiteTags();
     TagScope t(TagCat::Object, c.r[3], rd32(c.r[3] + 4));
     // One instance: its matrices blend alike (interp.cpp, replayPair). A shared model drawn once per
@@ -116,7 +161,9 @@ HLE(fn_80059F6C) {
     interp::tagGroup(sStreamItem ? sStreamItem : c.r[3]);
     const u32 item = sStreamItem;
     sStreamItem = 0;  // (not for models drawn further inside)
-    callOriginal(c, "fn_80059F6C");
+    const u32 object=c.r[3];
+    if(!avatar.hidden())callOriginal(c, "fn_80059F6C");
+    vravatar::drawOtherTool(c,object,true);
     sStreamItem = item;
 }
 
@@ -313,6 +360,7 @@ HLE(fn_800F3120) {
     sStreamItem = 0;
 }
 HLE(fn_8005A280) {  // shadow casters
+    vravatar::DrawPose avatar(c,c.r[3],true);
     registerSiteTags();
     TagScope t(TagCat::Object, c.r[3], rd32(c.r[3] + 4));
     interp::tagGroup(c.r[3]);  // one instance: its matrices blend alike (interp.cpp, replayPair)
@@ -382,8 +430,50 @@ HLE(fn_8001F138) {
 }
 HLE(fn_80015CF4) {
     registerSiteTags();
+    RoomModelScope model(sObjectDepth==0 && c.r[4]==0?c.r[3]:0);
     TagScope t(sObjectDepth > 0 || c.r[4] != 0 ? TagCat::Object : TagCat::World, c.r[3], c.r[4], c.r[5] & 0xFF);
+    const u32 object=c.r[3],pass=c.r[5],alpha=c.r[6];
+    const bool staticRoom=sObjectDepth==0 && c.r[4]==0;
+    const u32 map=rd32(VA(0x804D80C8)),state=VA(0x803A3CA0);
+    const unsigned room=rd8(state+0xC);
+    // The foyer's lower room 2 and landing 31 are one open volume. Native
+    // camera transitions fade room 2 away after arriving on the landing.
+    // Retain only that already-loaded static model, never neighboring rooms.
+    if(staticRoom && !sFoyerLower.drawing) {
+        if(map!=2 || (room!=2 && room!=31))sFoyerLower={};
+        else if(room==2 && pass==0 && alpha==255 && copyDispCount()!=sFoyerLower.frame) {
+            sFoyerLower.frame=copyDispCount();sFoyerLower.model=object;
+            sFoyerLower.table=gu::inMem1(object+0x3C)?rd32(object+0x3C):0;
+        } else if(room==31 && pass==0 && alpha==255 && copyDispCount()!=sFoyerLower.upperFrame) {
+            sFoyerLower.upperFrame=copyDispCount();sFoyerLower.upper=object;
+            sFoyerLower.upperTable=gu::inMem1(object+0x3C)?rd32(object+0x3C):0;
+        }
+    }
+    const bool immersive=vrhost::firstPerson() || (vravatar::diagnosticEnabled() && std::getenv("LM_VR_FOYER_TEST"));
+    // Keep a foyer floor solid while the original camera cross-fades it. The
+    // native fade draw is replaced, not added over the opaque model.
+    const bool knownFloor=(object==sFoyerLower.model && rd32(object+0x3C)==sFoyerLower.table) ||
+        (object==sFoyerLower.upper && rd32(object+0x3C)==sFoyerLower.upperTable);
+    if(staticRoom && immersive && map==2 && (room==2||room==31) && knownFloor &&
+       (rd8(state+0x1C)==1||rd8(state+0x1C)==2) && pass==2 && !sFoyerLower.drawing) {
+        sFoyerLower.drawing=true;
+        gu::call(c,GU_SYM("fn_80015CF4"),{object,0,0,255});
+        gu::call(c,GU_SYM("fn_80015CF4"),{object,0,1,255});
+        sFoyerLower.drawing=false;
+        static bool reported=false;if(!reported){reported=true;log("[vr foyer] preserve opaque floors throughout native camera fade");}
+        return;
+    }
     callOriginal(c, "fn_80015CF4");
+    if(staticRoom && (vrhost::firstPerson() || (vravatar::diagnosticEnabled() && std::getenv("LM_VR_FOYER_TEST"))) && map==2 && room==31 && pass==0 && alpha==255 &&
+       rd8(state+0x1C)==0 && !sFoyerLower.drawing && sFoyerLower.model && object!=sFoyerLower.model &&
+       gu::inMem1(sFoyerLower.model+0x3C) && rd8(sFoyerLower.model)==2 &&
+       gu::inMem1(sFoyerLower.table) && rd32(sFoyerLower.model+0x3C)==sFoyerLower.table) {
+        sFoyerLower.drawing=true;
+        gu::call(c,GU_SYM("fn_80015CF4"),{sFoyerLower.model,0,0,255});
+        gu::call(c,GU_SYM("fn_80015CF4"),{sFoyerLower.model,0,1,255});
+        sFoyerLower.drawing=false;
+        static bool reported=false;if(!reported){reported=true;log("[vr foyer] retaining loaded downstairs model after landing camera fade");}
+    }
 }
 // fn_80015BDC(room lighting r3, ambient colour r4), from the room loop fn_80011824: loads the room's
 // lights and its ambient colour (GXSetChanAmbColor at 0x80015C88). Untagged, the ambient fades
@@ -399,6 +489,8 @@ HLE(fn_80015BDC) {
 }
 
 HLE(fn_80015844) {  // one node (r6) of the model being drawn, recursive
+    traceRoomNode(s16(c.r[6]));
+    RoomFrameScope frame(s16(c.r[6]));
     const TagCat cat = sObjectDepth > 0 ? TagCat::Object : TagCat::World;
     TagScope t(cat, 0, 0x15844, c.r[6] & 0xFFFF);
     callOriginal(c, "fn_80015844");

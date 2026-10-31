@@ -2,6 +2,8 @@
 // model_viewer.cpp). Addresses are US GLME01 (VA() maps them to the European game's, see
 // recomp/version.h); how each was found: docs/UNUSED_CONTENT.md.
 #include "recomp/dev_tools.h"
+#include "recomp/interp.h"
+#include "recomp/test_checkpoints.h"
 
 #include "port/install.h"
 #include "port/settings.h"
@@ -12,8 +14,10 @@
 #include "recomp/version.h"
 #include "recomp/room_swap.h"
 #include "recomp/coop.h"
+#include "recomp/skip.h"
 #include "recomp/ui_scale.h"
 #include "recomp/unused2.h"
+#include "recomp/vr_avatar_guest.h"
 #include "recomp/silly_world.h"
 
 #include <imgui.h>
@@ -172,6 +176,7 @@ void noteLuigi(unsigned guestActor) {
 // loads map n instead of the mansion the first time map 2 loads; LM_START_APPEAR=<p> picks the
 // mansion appear point.
 HLE(fn_8000C188) {
+    checkpoints::mapSetup(c);
     recomp::unusedModelsMapSetup();
     static const int sMap = envInt("LM_START_MAP", -1);
     static const int sAppear = envInt("LM_START_APPEAR", 0);
@@ -230,19 +235,28 @@ HLE(fn_8018712C) {
     callOriginal(c, "fn_8018712C");
 }
 
+// The area-clear / portrait information screen uses native screen-space layout,
+// even if the surrounding room or dialogue remains active in the captured tape.
+HLE(fn_8018721C) {
+    interp::noteResultsScreen();
+    callOriginal(c,"fn_8018721C");
+}
+
 // Scene manager, once per main-loop iteration. A queued warp is applied exactly like the
 // event command <WARP>(n): next map = n and the current scene id cleared, so the manager
 // tears the game scene down and sets it up again for the new map on this call. Only while
 // the scene is settled: two seconds after the map setup, Luigi running for a second where
 // there is one (tearing a map down while it is still being set up crashes), and no event script.
 HLE(fn_8000B4A0) {
+    const bool checkpointReady=rd32(kCurSceneId)==sGameScene && rd32(kReqSceneId)==sGameScene && rd32(kSceneChanging)==0 && sSetupFrames>=60 && sLuigiFrames>=30 && rd32(kEventCursor)==0 && !skip::gameBoyView();
+    checkpoints::beforeScene(checkpointReady);
     const int map = sWarpMap.load();
     if (map >= 0) {
         const u32 scene = rd32(kCurSceneId);
         if (scene == sGameScene && rd32(kReqSceneId) == scene && rd32(kSceneChanging) == 0 && sSetupFrames >= 60 &&
             (sLuigiFrames >= 30 || sSetupFrames >= 300) && rd32(kEventCursor) == 0) {
             sWarpMap = -1;
-            sArrivalPending = true;
+            sArrivalPending = !checkpoints::loading();
             log("[dev] warp to map %d (appear point %d)", map, sWarpAppear.load());
             wr32(kAppearPoint, u32(sWarpAppear.load()));
             wr32(kNextMapNo, u32(map));
@@ -264,6 +278,9 @@ HLE(fn_801D7114) {
 //   0x800B17E4 beq (pass 6, flag bit 0x08)  -> debug text: dust, aura, water, heart (fn_8003EF40)
 //   0x800B1794 ble (pass 2, +0x1328 > 0)    -> XYZ axes on joint +0x1328 (fn_80094170, size 150)
 HLE(fn_800B172C) {
+    // The parked player has separate breath/beam effect draw calls here;
+    // hiding only his S3D body leaves those floating in the ghost cutaway.
+    if(vravatar::hideKeyGhostPlayerDraw(c.r[3]))return;
     const auto& e = port::settings().enhancements;
     static const int sEnvInfo = envInt("LM_DEV_INFO_DISPLAY", 0), sEnvScan = envInt("LM_DEV_SCAN_BOXES", 0),
                      sEnvAxes = envInt("LM_DEV_AXES", 0);
@@ -274,6 +291,8 @@ HLE(fn_800B172C) {
     const u16 flags = u16(rd16(self + 0x1324));
     if (force) wr16(self + 0x1324, u16(flags | force));
     const bool axes = pass == 2 && (e.dbgAxes || sEnvAxes) && s32(rd32(self + 0x1328)) <= 0;
+    vravatar::traceNativeHose(self,pass);
+    vravatar::NativeHosePose hose(c,self,pass);
     callOriginal(c, "fn_800B172C");
     if (force) wr16(self + 0x1324, u16((rd16(self + 0x1324) & ~force) | (flags & force)));
     if (axes) {
@@ -359,6 +378,7 @@ HLE(LMChangeFrameBuffer__Fv) {
         if (gu::inMem1(luigi))
             for (int i = 0; i < 3; i++) s.pos[i] = gu::rdf(luigi + 0x44 + 4 * i);
     }
+    checkpoints::frame(c,s.inGame && sLuigiFrames>=30 && sSetupFrames>=60 && rd32(kEventCursor)==0 && !skip::gameBoyView(),sLuigi,s.map,s.room);
     sStatus = s;
     rooms::onFrame(c, s.inGame, sLuigi != 0, s.map, s.room);
     // Test aid: LM_DEV_STATUS_LOG=<n> logs the warp-relevant state every n frames (scene, map,

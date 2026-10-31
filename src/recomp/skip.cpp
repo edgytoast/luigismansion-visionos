@@ -153,6 +153,8 @@ u32 sFrame = 0;
 // Guest pad state.
 bool sStartLatched = false;  // START went down since the last guest frame
 bool sStartHeld = false;
+bool sPauseRequested = false;
+u32 sPauseRequestedAt = 0;
 bool sMaskStart = false;     // the game must not see START (cutscene can be skipped)
 
 // Batching of fast-forwarded frames into one host frame.
@@ -296,6 +298,42 @@ void update() {
 
 u32 guestFrames() { return sFrame; }
 void setTestFastForward(bool on) { sTestFast = on; }
+bool cinematicCamera() { return cutscene(sample()); }
+bool dialogueCamera(bool textShown) {
+    static bool prompted=false;
+    const auto state=sample();
+    if(state.scene!=kSceneMainGame) prompted=false;
+    // An ANYKEY wait also occurs in item-get poses. Only actual NPC speech
+    // identifies a conversation; stale interpreter waits must not latch POV.
+    else if(textShown) prompted=true;
+    else if(!state.event) prompted=false;
+    return prompted;
+}
+bool choiceMenuActive() {
+    const auto state=sample();
+    return state.scene==kSceneMainGame && state.event && state.state==kStateChoice;
+}
+bool pauseMenuView(bool roomDrawn) {
+    if(sample().scene!=kSceneMainGame || (roomDrawn && sFrame>sPauseRequestedAt+15)) sPauseRequested=false;
+    return sPauseRequested && !roomDrawn;
+}
+bool statusMenuView() {
+    // res_list inventory has its own loader, independent of the pending scene
+    // mode. Its archive is cleared by the native close routine; phase 1 loads
+    // it and phase 2 makes its item/portrait pages available to draw.
+    const u32 archive=rd32(VOFF(0x804D8630,0x804C5D08));
+    const u8 phase=rd8(VOFF(0x804D863C,0x804C5D14));
+    return archive>=0x80000000u && archive<0x81800000u && phase!=0;
+}
+bool gameBoyView() {
+    const u32 mode=rd32(VA(0x804CFFF0));
+    if(mode==3) return false; // professor call portrait belongs to its scene, not the pause menu
+    if(mode==2) return true;
+    const u32 holder=rd32(VA(0x804D8180));
+    if(holder<0x80000000u || holder>=0x817FFFD8u) return false;
+    const u32 screen=rd32(holder+0x24);
+    return screen>=0x80000000u && screen<0x817FFF76u && rd8(screen+0x89)!=0;
+}
 
 bool onGuestFrame(Ctx&) {
     sFrame++;
@@ -321,7 +359,13 @@ void filterPad(PADStatus* pads, int count) {
     if (count <= 0) return;
     PADStatus& p = pads[0];
     const bool start = p.err == PAD_ERR_NONE && (p.button & PAD_BUTTON_START);
-    if (start && !sStartHeld) sStartLatched = true;
+    if (start && !sStartHeld) {
+        sStartLatched = true;
+        const auto status=sample();
+        if(status.scene==kSceneMainGame && !cutscene(status)) {
+            sPauseRequested=true;sPauseRequestedAt=sFrame;
+        }
+    }
     sStartHeld = start;
     if (sMaskStart) p.button &= ~PAD_BUTTON_START;
     if (sMode != Mode::Skipping) return;

@@ -1,3 +1,4 @@
+#include "recomp/interp.h"
 // HLE: controllers, via Aurora's PAD (SDL gamepads + keyboard bindings), plus
 // an optional scripted input for automated testing (--input).
 #include "recomp/ghost_lights.h"
@@ -5,6 +6,8 @@
 
 #include "port/options.h"
 #include "recomp/controls.h"
+#include "recomp/vr_host.h"
+#include "recomp/vr_avatar_guest.h"
 #include "recomp/coop.h"
 #include "recomp/coop_test.h"
 #include "recomp/menu.h"
@@ -14,6 +17,8 @@
 #include <dolphin/pad.h>
 
 #include <cstdlib>
+#include <algorithm>
+#include <cmath>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -175,6 +180,43 @@ HLE(PADRead) {
     controls::beforeRead();  // port devices (hot-plug) and bindings from F1 > Controls
     const u32 motor = PADRead(st);
     controls::afterRead(st);  // dead zones, sensitivity; input test values
+    if(!menu::isOpen() && port::options().inputScript.empty() && vrhost::applyMovement(st[0].stickX,st[0].stickY,skip::choiceMenuActive())) {
+        st[0].err=PAD_ERR_NONE;
+        // Some in-world choices consume digital directions rather than analog
+        // axes. Only the native CHOICE state gets stick-to-D-pad navigation.
+        if(skip::choiceMenuActive()) {
+            if(st[0].stickY>60)st[0].button|=PAD_BUTTON_UP;
+            if(st[0].stickY<-60)st[0].button|=PAD_BUTTON_DOWN;
+            if(st[0].stickX>60)st[0].button|=PAD_BUTTON_RIGHT;
+            if(st[0].stickX<-60)st[0].button|=PAD_BUTTON_LEFT;
+        }
+    }
+    if(!menu::isOpen() && port::options().inputScript.empty()) {
+        vrhost::readCameraStick(st[0].substickX,st[0].substickY);
+        if(vrhost::invertRightStickY())st[0].substickY=s8(std::clamp(-int(st[0].substickY),-127,127));
+        bool connected=false;const auto buttons=vrhost::readControllerButtons(connected);
+        if(connected) st[0].err=PAD_ERR_NONE;
+        if(buttons&vr::Confirm) st[0].button|=PAD_BUTTON_A;
+        if(buttons&vr::Back) st[0].button|=PAD_BUTTON_B;
+        if(buttons&vr::Pause) st[0].button|=PAD_BUTTON_START;
+        if(buttons&vr::Map) st[0].button|=PAD_BUTTON_Y;
+        if(buttons&vr::Search) st[0].button|=PAD_BUTTON_X;
+        if(buttons&vr::Status) st[0].button|=PAD_TRIGGER_Z;
+        if(buttons&vr::HudPrevious) st[0].button|=PAD_BUTTON_LEFT;
+        if(buttons&vr::HudNext) st[0].button|=PAD_BUTTON_RIGHT;
+        float left=0,right=0;
+        if(!skip::choiceMenuActive() && vrhost::readNativeToolTriggers(left,right)) {
+            // SteamVR controllers can also appear as a gamepad. In holster mode
+            // route triggers once by held tool, avoiding duplicate native L/R.
+            if(connected&&vrhost::beltMode()){st[0].triggerLeft=st[0].triggerRight=0;st[0].button&=u16(~(PAD_TRIGGER_L|PAD_TRIGGER_R));}
+            st[0].triggerLeft=std::max(st[0].triggerLeft,u8(std::lround(left*255)));
+            st[0].triggerRight=std::max(st[0].triggerRight,u8(std::lround(right*255)));
+            if(left>=0.65f)st[0].button|=PAD_TRIGGER_L;
+            if(right>=0.65f)st[0].button|=PAD_TRIGGER_R;
+        }
+    } else {
+        vrhost::discardControllerButtons(); // require release before returning input to the game
+    }
     logPad(st);
     if (menu::isOpen()) {  // the overlay menu owns input while open
         for (auto& s : st) {
@@ -194,6 +236,7 @@ HLE(PADRead) {
         if (st[0].button && sLogged++ < 20)
             log("[pad] retrace %u frame %u: buttons %04X err %d", viRetraceCount(), skip::guestFrames(), st[0].button, st[0].err);
     }
+    if(!menu::isOpen()&&vravatar::testDoorMovement(st[0].stickX,st[0].stickY))st[0].err=PAD_ERR_NONE;
     skip::filterPad(st, PAD_MAX_CONTROLLERS);
     // 2-player co-op improvements: player 2's Game Boy Horror buttons do nothing, and player 2
     // has no input while an event has set them aside (coop_fixes.cpp).
@@ -209,6 +252,12 @@ HLE(PADRead) {
         st[0].button &= PAD_BUTTON_START;
         st[0].stickX = st[0].stickY = st[0].substickX = st[0].substickY = 0;
         st[0].triggerLeft = st[0].triggerRight = st[0].analogA = st[0].analogB = 0;
+    }
+    if(vrhost::enabled()) {
+        const bool x=(st[0].button&PAD_BUTTON_X)&&!(sLastButtons&PAD_BUTTON_X);
+        const bool back=(st[0].button&PAD_BUTTON_B)&&!(sLastButtons&PAD_BUTTON_B);
+        const bool device=skip::gameBoyView();
+        if(x || (back&&device))interp::noteSearchToggle(device);
     }
     sLastButtons = st[0].err == PAD_ERR_NONE ? st[0].button : 0;
     for (int i = 0; i < PAD_MAX_CONTROLLERS; i++) {

@@ -1,0 +1,29 @@
+--- a/lib/imgui.hpp
++++ b/lib/imgui.hpp
+@@ -33,6 +33,7 @@
+ 
+ void process_event(const SDL_Event& event) noexcept;
+ void set_cursor_managed(bool managed) noexcept;
++void set_input_callback(void (*callback)()) noexcept;
+ void new_frame(const AuroraWindowSize& size) noexcept;
+ DrawData freeze() noexcept;
+ void render(const wgpu::RenderPassEncoder& pass, const DrawData& drawData, float width=0, float height=0) noexcept;
+--- a/lib/imgui.cpp
++++ b/lib/imgui.cpp
+@@ -197,6 +197,8 @@
+   ImGui_ImplSDL3_ProcessEvent(&renderEvent);
+ }
+ 
++static void (*sInputCallback)() = nullptr;
++void set_input_callback(void (*callback)()) noexcept { sInputCallback = callback; }
+ void new_frame(const AuroraWindowSize& size) noexcept {
+   ZoneScoped;
+   ImVec2 framebufferScale{
+@@ -254,6 +256,7 @@
+   ImGuiIO& io = ImGui::GetIO();
+   io.DisplayFramebufferScale = framebufferScale;
+   ImGui::GetIO().DisplaySize = displaySize;
++  if (sInputCallback) sInputCallback();
+   ImGui::NewFrame();
+ }
+ 

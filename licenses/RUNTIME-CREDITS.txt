@@ -1,0 +1,9 @@
+Runtime dependencies and source provenance:
+Dawn: https://dawn.googlesource.com/dawn (BSD-3-Clause)
+nod: https://github.com/encounter/nod (MIT)
+DirectX Shader Compiler: https://github.com/microsoft/DirectXShaderCompiler (LLVM-derived license notices)
+SDL: https://github.com/libsdl-org/SDL (zlib)
+libpng: http://www.libpng.org/pub/png/libpng.html
+zlib: https://zlib.net/
+OpenXR headers: https://github.com/KhronosGroup/OpenXR-SDK
+Compiler licensing is in bin/llvm/LLVM-LICENSE.TXT.

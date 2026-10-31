@@ -1503,6 +1503,9 @@ State state() {
 }
 
 void startupCheck() {
+#ifdef LM_VR_BUILD
+    return; // VR binaries are built with local patches, not stock release assets.
+#endif
     if (!port::settings().updates.checkAtStartup) {
         ulog("startup check off (F1 > Game)");
         return;
@@ -1520,6 +1523,9 @@ void startupCheck() {
 }
 
 void checkNow() {
+#ifdef LM_VR_BUILD
+    return; // VR binaries are built with local patches, not stock release assets.
+#endif
     {
         std::lock_guard lk(sM);
         if (sBusy) return;
@@ -1579,6 +1585,9 @@ void download() {
 void cancel() { sCancel = true; }
 
 void installAndRestart() {
+#ifdef LM_VR_BUILD
+    return; // VR binaries are built with local patches, not stock release assets.
+#endif
     fs::path root;
     std::string tag;
     {

@@ -28,6 +28,12 @@ namespace {
 InstallState sInstall;
 std::vector<std::string> sArgs;
 
+#ifdef LM_VR_BUILD
+constexpr const char* kProfileName = "Luigi's Mansion VR";
+#else
+constexpr const char* kProfileName = "Luigi's Mansion PC";
+#endif
+
 }  // namespace
 
 const char* gameId(GameVersion v) { return v == GameVersion::PAL ? "GLMP01" : "GLME01"; }
@@ -80,7 +86,7 @@ namespace fs = std::filesystem;
 
 // The product was called "Luigi's Mansion PC" up to 1.0.1; its folders are moved to the new
 // name on the first start (docs/SETUP.md "What lives where").
-constexpr const char* kFolderName = "Luigi's Mansion Recompiled";
+constexpr const char* kFolderName = kProfileName;
 constexpr const char* kOldFolderName = "Luigi's Mansion PC";
 
 std::string u8(const fs::path& p) {
@@ -105,6 +111,9 @@ bool onlyLauncherLogs(const fs::path& dir) {
 // A rename that fails (a file held open by another program, another volume) falls back to a
 // copy; the old folder is kept then.
 void migrateOldFolder(const fs::path& base) {
+#ifdef LM_VR_BUILD
+    return; // Never migrate or rename a flat-game profile into the VR build.
+#endif
     std::error_code ec;
     const fs::path oldDir = base / fs::path(std::u8string(reinterpret_cast<const char8_t*>(kOldFolderName)));
     const fs::path newDir = base / fs::path(std::u8string(reinterpret_cast<const char8_t*>(kFolderName)));
@@ -168,10 +177,8 @@ enum class Kind { Config, Data, Cache };
 #ifdef _WIN32
 fs::path sysDir(Kind, bool create) {
     const wchar_t* base = _wgetenv(L"APPDATA");
-    if (!base) return fs::path(L".");
-    static const bool sMigrated = (migrateOldFolder(base), true);
-    (void)sMigrated;
-    fs::path dir = fs::path(base) / L"Luigi's Mansion Recompiled";
+    std::filesystem::path dir = base ? std::filesystem::path(base) / kProfileName
+                                     : std::filesystem::current_path() / kProfileName;
     std::error_code ec;
     if (create) fs::create_directories(longPath(dir), ec);
     return dir;
@@ -185,17 +192,7 @@ fs::path sysDir(Kind kind, bool create) {
     if (const char* v = std::getenv(var); v && v[0] == '/') base = v;
     else if (const char* home = std::getenv("HOME"); home && home[0]) base = fs::path(home) / fallback;
     else base = ".";
-    // Once per base folder (config, data and cache are separate on Linux).
-    static std::mutex sM;
-    static std::vector<fs::path> sDone;
-    {
-        std::lock_guard lk(sM);
-        if (std::find(sDone.begin(), sDone.end(), base) == sDone.end()) {
-            sDone.push_back(base);
-            migrateOldFolder(base);
-        }
-    }
-    fs::path dir = base / kFolderName;
+    std::filesystem::path dir = base / kProfileName;
     std::error_code ec;
     if (create) fs::create_directories(dir, ec);
     return dir;
