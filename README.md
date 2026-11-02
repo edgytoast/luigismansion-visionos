@@ -6,6 +6,12 @@
 
 <p align="center"><b>A haunted house, at coffee-table scale.</b></p>
 
+<div align="center">
+
+[![Listed in the AVP Ports Index](https://img.shields.io/badge/AVP_Ports_Index-listed-0A84FF)](https://github.com/edgytoast/avp-ports-index/blob/main/ports/luigis-mansion-vr.md)
+
+</div>
+
 *Luigi's Mansion* (2001) as a haunted diorama on Apple Vision Pro. The whole mansion stands in your
 room as a miniature: lean in to peer through a doorway, crouch to see under the stairs, walk round
 it while Luigi creeps through the Foyer with his flashlight. Or put it on your table in the shared
