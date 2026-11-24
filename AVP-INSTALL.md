@@ -257,3 +257,7 @@ Ported to Apple Vision Pro by [Trevorbilt](https://trevorbilt.com) (MIT for Trev
 
 A built app holds code recompiled from your own disc: build it for yourself and don't pass it on. *Luigi's Mansion* belongs to Nintendo; this project isn't
 affiliated with or endorsed by Nintendo and includes nothing from the game.
+
+## Support
+
+This port brings Luigi's Mansion to Apple Vision Pro. It's listed on the [AVP Ports Index](https://github.com/edgytoast/avp-ports-index), which tracks every port we can find and runs a safety check on each one. If this guide got you playing, you can [buy me a coffee](https://buymeacoffee.com/adminpz) to help keep it running.
